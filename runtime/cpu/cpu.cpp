@@ -64,6 +64,13 @@ void Cpu_Init()
         }
         s_table[(m->guest - CODE_BEGIN) / 4] = m->host;
     }
+#ifdef CASTAWAY_DXMT
+    if (std::string(code.gameId) == "R42E69")
+    {
+        extern void InstallMacMainMenuHooks();
+        InstallMacMainMenuHooks();
+    }
+#endif
     LOG_INFO("registered {} recompiled functions", n);
     Timebase_Init();
 }

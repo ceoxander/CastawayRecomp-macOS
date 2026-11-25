@@ -1,0 +1,15 @@
+CASTAWAY RECOMP · INSTALADOR APPLE SILICON
+
+Instala herramientas, te pide tu propia imagen del juego y compila la aplicación
+en tu Mac. La imagen del juego permanece en tu Mac.
+
+1. Abre “Instalar Castaway.command”.
+2. Si macOS lo bloquea, haz clic derecho y elige Abrir.
+3. Selecciona tu imagen ISO, RVZ o WBFS. El instalador incluye el extractor de discos del proyecto.
+4. Espera a que termine la compilación. La app aparecerá en Aplicaciones.
+
+Requiere Apple Silicon, Xcode Command Line Tools y Homebrew.
+El primer uso descarga dependencias de compilación y puede tardar.
+
+Registro de instalación:
+~/Library/Logs/CastawayRecomp-Installer.log

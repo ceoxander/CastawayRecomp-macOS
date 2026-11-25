@@ -1,6 +1,7 @@
 #include "host.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -103,6 +104,9 @@ bool Host_Restart(const char* extraArg)
 }
 
 #else
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -151,7 +155,11 @@ void Host_SetThreadName(const char* name)
 {
     char n[16];   // Linux limit, with the terminator
     snprintf(n, sizeof(n), "%s", name);
+#ifdef __APPLE__
+    pthread_setname_np(n);
+#else
     pthread_setname_np(pthread_self(), n);
+#endif
 }
 
 void Host_SetThreadPriority(HostPriority p)
@@ -176,7 +184,16 @@ int Host_Seek64(FILE* f, int64_t offset, int whence) { return fseeko(f, (off_t)o
 std::filesystem::path Host_ExePath()
 {
     std::error_code ec;
+#ifdef __APPLE__
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::vector<char> path(size);
+    if (_NSGetExecutablePath(path.data(), &size) != 0) return {};
+    auto resolved = std::filesystem::canonical(path.data(), ec);
+    return ec ? std::filesystem::path(path.data()) : resolved;
+#else
     return std::filesystem::read_symlink("/proc/self/exe", ec);
+#endif
 }
 
 int Host_StrICmp(const char* a, const char* b) { return strcasecmp(a, b); }
@@ -198,3 +215,29 @@ bool Host_Restart(const char* extraArg)
     return posix_spawn(&pid, exe.c_str(), nullptr, nullptr, av.data(), environ) == 0;
 }
 #endif
+
+std::filesystem::path Host_AppDir()
+{
+    auto dir = Host_ExePath().parent_path();
+#ifdef __APPLE__
+    const auto bundle = dir.parent_path().parent_path();
+    if (dir.filename() == "MacOS" && dir.parent_path().filename() == "Contents" &&
+        bundle.extension() == ".app")
+    {
+        dir = bundle.parent_path();
+        // Installed applications may be in a system-owned Applications directory.
+        // Keep saves, settings and shader caches in the user's writable profile.
+        if (dir.filename() == "Applications")
+        {
+            if (const char* home = std::getenv("HOME"); home && *home)
+            {
+                auto support = std::filesystem::path(home) / "Library/Application Support/CastawayRecomp";
+                std::error_code ec;
+                std::filesystem::create_directories(support, ec);
+                if (!ec) return support;
+            }
+        }
+    }
+#endif
+    return dir;
+}

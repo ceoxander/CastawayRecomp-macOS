@@ -10,6 +10,7 @@ enum class SettingsHost
 };
 
 void SettingsUI_Draw(SettingsHost host);
+void SettingsUI_ShowGraphics();
 // In game: the user confirmed "Restart the game?" (the overlay restarts the process).
 bool SettingsUI_TakeRestartRequest();
 

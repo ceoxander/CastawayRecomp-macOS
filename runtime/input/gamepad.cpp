@@ -30,6 +30,17 @@ Uint64 s_rumbleSent = 0;
 std::atomic<bool> s_reload{ true };                               // rebuild s_buttons from the bindings
 std::vector<std::pair<SDL_GamepadButton, uint32_t>> s_buttons;   // button -> BTN_*
 
+#ifdef __APPLE__
+void SetDualSenseLight(SDL_Gamepad* gamepad)
+{
+    if (SDL_GetRealGamepadType(gamepad) != SDL_GAMEPAD_TYPE_PS5) return;
+    if (SDL_SetGamepadLED(gamepad, 150, 220, 24))
+        LOG_INFO("DualSense light set to yellow-green");
+    else
+        LOG_INFO("DualSense light unavailable: {}", SDL_GetError());
+}
+#endif
+
 // -1..1 stick pair with a radial deadzone, scaled to the GameCube range
 void Stick(SDL_Gamepad* g, SDL_GamepadAxis ax, SDL_GamepadAxis ay, int8_t& ox, int8_t& oy)
 {
@@ -72,16 +83,38 @@ void Gamepad_Init()
     std::lock_guard lk(s_lock);
     s_ok = true;
     LOG_INFO("SDL {}.{}.{} gamepad support", SDL_MAJOR_VERSION, SDL_MINOR_VERSION, SDL_MICRO_VERSION);
+    // SDL queues GAMEPAD_ADDED events during startup, but enumerate here as well so
+    // controllers already connected before the app opened are immediately available.
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    for (int i = 0; ids && i < count; ++i)
+    {
+        if (SDL_Gamepad* g = SDL_OpenGamepad(ids[i]))
+        {
+#ifdef __APPLE__
+            SetDualSenseLight(g);
+#endif
+            s_pads.push_back(g);
+            if (!s_active) s_active = g;
+            LOG_INFO("gamepad connected at startup: {}", SDL_GetGamepadName(g) ? SDL_GetGamepadName(g) : "?");
+        }
+    }
+    SDL_free(ids);
 }
 
 void Gamepad_HandleEvent(const SDL_Event& e)
 {
     if (e.type == SDL_EVENT_GAMEPAD_ADDED)
     {
+        std::lock_guard lk(s_lock);
+        for (SDL_Gamepad* existing : s_pads)
+            if (SDL_GetGamepadID(existing) == e.gdevice.which) return;
         if (SDL_Gamepad* g = SDL_OpenGamepad(e.gdevice.which))
         {
+#ifdef __APPLE__
+            SetDualSenseLight(g);
+#endif
             LOG_INFO("gamepad connected: {}", SDL_GetGamepadName(g) ? SDL_GetGamepadName(g) : "?");
-            std::lock_guard lk(s_lock);
             s_pads.push_back(g);
             if (!s_active) s_active = g;
         }
@@ -154,6 +187,14 @@ bool Gamepad_Read(PadState& p)
 }
 
 void Gamepad_ReloadBindings() { s_reload = true; }
+
+bool Gamepad_IsPlayStation()
+{
+    std::lock_guard lk(s_lock);
+    if (!s_active) return false;
+    const auto type = SDL_GetRealGamepadType(s_active);
+    return type == SDL_GAMEPAD_TYPE_PS4 || type == SDL_GAMEPAD_TYPE_PS5;
+}
 
 void Gamepad_Rumble(bool on)
 {

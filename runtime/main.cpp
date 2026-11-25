@@ -18,6 +18,9 @@
 #include <algorithm>
 #include <filesystem>
 #include <string>
+#ifdef __APPLE__
+#include <thread>
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -28,11 +31,33 @@ void Renderer_Init();
 void AudioOut_Init();
 void Crash_Init();
 void Crash_StartWatchdog();
+static void RunGuest(const std::string& dataDir, const std::string& isoPath,
+                     const std::string& nand, uint32_t watchAddr, int profStart, int profDur)
+{
+    Crash_Init();
+    Cpu_Init();
+    Sched_Init();
+    Threads_Init();
+    HW_Init();
+    Renderer_Init();
+    AudioOut_Init();
+    { extern bool g_gpuThread; if (g_gpuThread) GX_StartThread(); }
+    if (!Disc_Open(dataDir, isoPath)) FATAL("cannot open disc data");
+    std::filesystem::create_directories(nand);
+    IOS_Init(nand);
+    NAND_InitSystemFiles();
+
+    uint32_t entry = Boot_Setup(dataDir);
+    if (watchAddr) { extern void Crash_SetWatch(uint32_t); Crash_SetWatch(watchAddr); }
+    if (!entry) FATAL("boot failed");
+    Crash_StartWatchdog();
+    if (profStart >= 0) { extern void Crash_StartProfiler(int, int); Crash_StartProfiler(profStart, profDur); }
+    Threads_RunMain(entry);
+}
 extern bool g_noMessageBox;
 extern int g_logLevel;
 extern "C" uint32_t g_cfgFrameRate;
 
-static std::string ExeDir() { return Host_ExePath().parent_path().string(); }
 
 // Restarts the game (settings that need a restart): same command line, no launcher.
 void App_Restart()
@@ -70,7 +95,7 @@ int main(int argc, char** argv)
         extern int Renderer_PrecompileShaders(const std::string& dir);
         return Renderer_PrecompileShaders(argv[2]) ? 1 : 0;
     }
-    std::string root = ExeDir();
+    std::string root = Host_AppDir().string();
     Log_Open((root + "/CastawayRecomp.log").c_str());
     Config_Load(root + "/config.ini");
     std::string dataDir = g_config.dataDir, isoPath = g_config.isoPath;
@@ -80,11 +105,13 @@ int main(int argc, char** argv)
     // command line overrides for this run only (never written to config.ini)
     bool fps60 = false, singleCore = false, skipLauncher = false;
     int scaleOverride = 0;
+    int languageOverride = -1;
     for (int i = 1; i < argc; i++)
     {
         std::string a = argv[i];
         if (a == "--data" && i + 1 < argc) dataDir = argv[++i];
         else if (a == "--iso" && i + 1 < argc) isoPath = argv[++i];
+        else if (a == "--language" && i + 1 < argc) languageOverride = Config_ParseLanguage(argv[++i]);
         else if (a == "--verbose") g_logLevel = 0;
         else if (a == "--60fps") fps60 = true;
         else if (a == "--profile" && i + 2 < argc) { profStart = atoi(argv[++i]); profDur = atoi(argv[++i]); }
@@ -148,7 +175,14 @@ int main(int argc, char** argv)
         if (!Launcher_Run(dataDir, isoPath, installDest)) return 0;
     }
 
-    g_cfgFrameRate = fps60 ? 60 : 30;   // unused: no frame-rate patch for this game (tools/recomp.py PATCHES)
+    if (languageOverride >= 0) g_config.language = languageOverride;
+#ifdef __APPLE__
+    // The guest VI runs at 59.94/60 fields per second. Do not advertise 30 FPS on macOS.
+    // This game has no safe 120 Hz simulation patch; doubling guest time would break physics/audio.
+    g_cfgFrameRate = 60;
+#else
+    g_cfgFrameRate = fps60 ? 60 : 30;   // no frame-rate patch for this game (tools/recomp.py PATCHES)
+#endif
     { extern bool g_gpuThread; g_gpuThread = g_config.gpuThread && !singleCore; }
     g_videoConfig.internalScale = scaleOverride ? scaleOverride : g_config.internalScale;
     g_videoConfig.windowWidth = g_config.windowWidth;
@@ -169,25 +203,16 @@ int main(int argc, char** argv)
         if (!Region_Select(Release_InstalledId(dataDir), error)) FATAL("Cannot start the game: {}", error);
     }
     if (!Memory_Init()) FATAL("memory init failed");
-    Crash_Init();
-    Cpu_Init();
-    Sched_Init();
-    Threads_Init();
-    HW_Init();
-    Renderer_Init();
-    AudioOut_Init();
-    { extern bool g_gpuThread; if (g_gpuThread) GX_StartThread(); }
-    if (!Disc_Open(dataDir, isoPath)) FATAL("cannot open disc data");
     std::string nand = nandDir.empty() ? root + "/nand" : nandDir;
-    std::filesystem::create_directories(nand);
-    IOS_Init(nand);
-    NAND_InitSystemFiles();
-
-    uint32_t entry = Boot_Setup(dataDir);
-    if (watchAddr) { extern void Crash_SetWatch(uint32_t); Crash_SetWatch(watchAddr); }
-    if (!entry) FATAL("boot failed");
-    Crash_StartWatchdog();
-    if (profStart >= 0) { extern void Crash_StartProfiler(int, int); Crash_StartProfiler(profStart, profDur); }
-    Threads_RunMain(entry);
+#ifdef __APPLE__
+    if (!Video_Init()) FATAL("{}", Video_DeviceHelp());
+    // Cocoa owns the main thread. The guest scheduler and its fibers stay on one worker.
+    std::thread([&] { RunGuest(dataDir, isoPath, nand, watchAddr, profStart, profDur); }).detach();
+    Video_RunEventLoop();
+    fflush(nullptr);
+    _Exit(0);
+#else
+    RunGuest(dataDir, isoPath, nand, watchAddr, profStart, profDur);
     return 0;
+#endif
 }

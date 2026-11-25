@@ -18,5 +18,6 @@ ID3D11ShaderResourceView* HiRes_Find(const uint8_t* data, uint32_t dataSize, con
 
 // --dump-textures: writes every decoded texture as <exe>/dump/textures/<game ID>/<name>.png
 extern bool g_dumpTextures;
+bool HiRes_IsWiiBackPrompt(const uint8_t* data, uint32_t size);
 void HiRes_Dump(const uint8_t* data, uint32_t dataSize, const uint8_t* tlut, uint32_t tlutSize, uint32_t fmt, uint32_t w, uint32_t h,
                 bool mipmapped, const uint32_t* rgba);

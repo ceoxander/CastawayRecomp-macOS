@@ -59,15 +59,20 @@ if(WIN32)
         URL https://github.com/encounter/nod/releases/download/${NOD_VERSION}/libnod-windows-x86_64.tar.gz
         URL_HASH SHA256=c9dfecf8e52066a5222f3cb1cad18d0740c958ce65bf60cb84e780a3856ed881
         DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
+    FetchContent_MakeAvailable(nod_prebuilt)
+    set(NOD_SEARCH_DIR ${nod_prebuilt_SOURCE_DIR})
+elseif(APPLE)
+    set(NOD_SEARCH_DIR ${CMAKE_SOURCE_DIR}/third_party/nod-macos-arm64)
 else()
     FetchContent_Declare(nod_prebuilt
         URL https://github.com/encounter/nod/releases/download/${NOD_VERSION}/libnod-linux-x86_64.tar.gz
         URL_HASH SHA256=920adb1d2386c8728e0521f8d52809057c04bd46913433a0000ee0931d08d69f
         DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
+    FetchContent_MakeAvailable(nod_prebuilt)
+    set(NOD_SEARCH_DIR ${nod_prebuilt_SOURCE_DIR})
 endif()
-FetchContent_MakeAvailable(nod_prebuilt)
 block()
-    find_package(nod REQUIRED CONFIG PATHS ${nod_prebuilt_SOURCE_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+    find_package(nod REQUIRED CONFIG PATHS ${NOD_SEARCH_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 
     # with the host helpers and SHA-1, which the runtime gets through this library too
     add_library(bkr_installer STATIC runtime/install/install.cpp runtime/install/verify.cpp runtime/install/releases.cpp
@@ -107,7 +112,8 @@ block()
     FetchContent_MakeAvailable(imgui)
     add_library(imgui STATIC ${imgui_SOURCE_DIR}/imgui.cpp ${imgui_SOURCE_DIR}/imgui_draw.cpp
                              ${imgui_SOURCE_DIR}/imgui_tables.cpp ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-                             ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp)
+                             ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+                             $<$<NOT:$<PLATFORM_ID:Darwin>>:${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp>)
     target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
     target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
 endblock()
@@ -131,7 +137,7 @@ target_link_libraries(imgui PUBLIC SDL3::SDL3)   # the ImGui SDL3 backend
 # Vulkan and presents to SDL windows; vkd3d-utils (https://gitlab.winehq.org/wine/vkd3d,
 # LGPL-2.1+) provides D3DCompile for the generated HLSL. Both are built into
 # CASTAWAY_DEPS (see docs/linux.md).
-if(NOT WIN32)
+if(NOT WIN32 AND NOT APPLE)
     set(CASTAWAY_DEPS "$ENV{HOME}/castaway-deps/prefix" CACHE PATH "prefix with DXVK-native and vkd3d")
     find_library(DXVK_D3D11 dxvk_d3d11 PATHS ${CASTAWAY_DEPS}/lib/x86_64-linux-gnu ${CASTAWAY_DEPS}/lib REQUIRED NO_DEFAULT_PATH)
     find_library(DXVK_DXGI dxvk_dxgi PATHS ${CASTAWAY_DEPS}/lib/x86_64-linux-gnu ${CASTAWAY_DEPS}/lib REQUIRED NO_DEFAULT_PATH)
@@ -142,6 +148,23 @@ if(NOT WIN32)
     target_compile_definitions(d3d11_native INTERFACE D3DCompile=Host_D3DCompile D3DCreateBlob=Host_D3DCreateBlob)
     target_link_libraries(d3d11_native INTERFACE ${DXVK_D3D11} ${DXVK_DXGI} ${VKD3D_UTILS})
     target_link_libraries(imgui PUBLIC d3d11_native)
+endif()
+
+if(APPLE)
+    set(CASTAWAY_DXMT_SOURCE "" CACHE PATH "DXMT native checkout containing the Direct3D headers")
+    set(CASTAWAY_DXMT_LIBRARY "" CACHE FILEPATH "Native ARM64 libdxmt-native.dylib")
+    set(CASTAWAY_VKD3D_UTILS "" CACHE FILEPATH "Native ARM64 libvkd3d-utils.dylib")
+    if(CASTAWAY_DXMT_SOURCE AND CASTAWAY_DXMT_LIBRARY AND CASTAWAY_VKD3D_UTILS)
+        FetchContent_GetProperties(imgui SOURCE_DIR imgui_SOURCE_DIR)
+        target_sources(imgui PRIVATE ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer3.cpp)
+        add_library(castaway_dxmt INTERFACE)
+        target_include_directories(castaway_dxmt SYSTEM INTERFACE
+            "${CASTAWAY_DXMT_SOURCE}/include/native/windows"
+            "${CASTAWAY_DXMT_SOURCE}/include/native/directx")
+        target_compile_definitions(castaway_dxmt INTERFACE CASTAWAY_DXMT=1
+            D3DCompile=Host_D3DCompile D3DCreateBlob=Host_D3DCreateBlob)
+        target_link_libraries(castaway_dxmt INTERFACE "${CASTAWAY_DXMT_LIBRARY}" "${CASTAWAY_VKD3D_UTILS}")
+    endif()
 endif()
 
 if(NOT EXISTS ${CMAKE_SOURCE_DIR}/generated/sources.cmake)
@@ -175,8 +198,17 @@ list(FILTER RUNTIME_SOURCES EXCLUDE REGEX "/runtime/install/")
 list(FILTER RUNTIME_SOURCES EXCLUDE REGEX "/runtime/kernel/(host|sha1)\.cpp$")   # in bkr_installer
 if(WIN32)
     list(FILTER RUNTIME_SOURCES EXCLUDE REGEX "_posix\\.cpp$")
+elseif(APPLE)
+    list(FILTER RUNTIME_SOURCES EXCLUDE REGEX "_win32\\.cpp$")
+    if(NOT TARGET castaway_dxmt)
+        list(FILTER RUNTIME_SOURCES EXCLUDE REGEX "/runtime/gx/d3dcompiler_posix\\.cpp$")
+    endif()
 else()
     list(FILTER RUNTIME_SOURCES EXCLUDE REGEX "_win32\\.cpp$")
+endif()
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+    enable_language(ASM)
+    list(APPEND RUNTIME_SOURCES runtime/kernel/fiber_arm64.S)
 endif()
 add_executable(CastawayRecomp ${RUNTIME_SOURCES})
 target_include_directories(CastawayRecomp PRIVATE runtime runtime/cpu generated)
@@ -194,6 +226,33 @@ if(WIN32)
     # SDL3.dll next to the exe
     add_custom_command(TARGET CastawayRecomp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL3::SDL3> $<TARGET_FILE_DIR:CastawayRecomp>)
+elseif(APPLE)
+    enable_language(OBJCXX)
+    target_sources(CastawayRecomp PRIVATE runtime/ui/launcher_macos.mm)
+    set_source_files_properties(runtime/ui/launcher_macos.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    set_target_properties(CastawayRecomp PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
+    target_link_libraries(CastawayRecomp PRIVATE bkr_installer imgui SDL3::SDL3 "-framework AppKit")
+
+    if(TARGET castaway_dxmt)
+        set(menu_background "${CMAKE_SOURCE_DIR}/runtime/ui/assets/tropical-menu.png")
+        set(app_icon "${CMAKE_SOURCE_DIR}/runtime/ui/assets/CastawayRecomp.icns")
+        configure_file("${menu_background}" "${CASTAWAY_OUT}/tropical-menu.png" COPYONLY)
+        target_sources(CastawayRecomp PRIVATE runtime/gx/video_macos.mm runtime/gx/color_macos.mm)
+        set_source_files_properties(runtime/gx/video_macos.mm runtime/gx/color_macos.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(CastawayRecomp PRIVATE castaway_dxmt "-framework CoreGraphics" "-framework Metal" "-framework QuartzCore")
+    endif()
+
+    add_custom_target(CastawayRecomp_app
+        COMMAND ${CMAKE_COMMAND}
+            "-DAPP=${CASTAWAY_OUT}/CastawayRecomp.app"
+            "-DEXE=$<TARGET_FILE:CastawayRecomp>"
+            "-DSDL=$<TARGET_FILE:SDL3::SDL3>"
+            "-DMENU_BACKGROUND=${menu_background}"
+            "-DAPP_ICON=${app_icon}"
+            "-DDXMT=${CASTAWAY_DXMT_LIBRARY}"
+            "-DVKD3D_UTILS=${CASTAWAY_VKD3D_UTILS}"
+            -P ${CMAKE_SOURCE_DIR}/tools/package_macos.cmake
+        DEPENDS CastawayRecomp VERBATIM)
 else()
     target_link_libraries(CastawayRecomp PRIVATE bkr_installer imgui SDL3::SDL3 d3d11_native pthread dl)
     # find DXVK and vkd3d next to the binary (lib/) or in the build prefix
@@ -210,8 +269,8 @@ endif()
 if(WIN32)
     target_compile_definitions(CastawayRecomp PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 else()
-    target_compile_options(CastawayRecomp PRIVATE -Wno-unused-function -Wno-unused-variable -fno-strict-aliasing
-                                                  -include ${CMAKE_SOURCE_DIR}/runtime/compat.h)
+    target_compile_options(CastawayRecomp PRIVATE
+        "$<$<COMPILE_LANGUAGE:CXX>:-Wno-unused-function;-Wno-unused-variable;-fno-strict-aliasing;-include;${CMAKE_SOURCE_DIR}/runtime/compat.h>")
 endif()
 if(MSVC_FRONTEND)
     target_compile_options(CastawayRecomp PRIVATE /EHsc /std:c++latest /utf-8 $<$<CONFIG:RelWithDebInfo>:/Ob2>)

@@ -5,6 +5,7 @@
 #include "../version.h"
 #include "../input/bindings.h"
 #include "../input/input.h"
+#include "../input/gamepad.h"
 
 #include <SDL3/SDL.h>
 #include <imgui.h>
@@ -13,15 +14,18 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <format>
 #include <string>
+#include <utility>
 
-extern bool g_asyncShaders;
+extern std::atomic<bool> g_asyncShaders;
 void Renderer_ResetSamplers();
 
 namespace
 {
 bool s_restartRequested = false;
+bool s_showGraphics = false;
 bool s_askRestart = false;          // open the "needs a restart" prompt next frame
 const char* s_help = nullptr;      // description of the hovered setting
 
@@ -91,31 +95,59 @@ bool Combo(SettingsHost host, const char* label, T& value, const T* values, cons
 void VideoTab(SettingsHost host)
 {
     Config& c = g_config;
-    ImGui::SeparatorText("Display");
-    Check(host, "Fullscreen", c.fullscreen, false, "Borderless fullscreen. F11 or Alt+Enter also toggle it.");
+    const bool spanish = Config_SpanishInterface();
+    ImGui::SeparatorText(spanish ? "Pantalla" : "Display");
+    Check(host, spanish ? "Pantalla completa" : "Fullscreen", c.fullscreen, false, "Borderless fullscreen. F11 or Alt+Enter also toggle it.");
     Check(host, "VSync", c.vsync, false, "Wait for the monitor's refresh. The game paces itself, so this is only needed against tearing.");
-    Check(host, "Widescreen (16:9)", c.widescreen, true, "16:9 like the Wii's widescreen setting. Off: 4:3.");
+    Check(host, spanish ? "Panorámico (16:9)" : "Widescreen (16:9)", c.widescreen, true, "16:9 like the Wii's widescreen setting. Off: 4:3.");
     static const int sizes[][2] = { { 1280, 720 }, { 1600, 900 }, { 1920, 1080 }, { 2560, 1440 }, { 3840, 2160 } };
     int sizeIdx = 0;
     const int sizeIds[] = { 0, 1, 2, 3, 4 };
     const char* sizeNames[] = { "1280 x 720", "1600 x 900", "1920 x 1080", "2560 x 1440", "3840 x 2160" };
     for (int i = 0; i < 5; i++)
         if (sizes[i][0] == c.windowWidth && sizes[i][1] == c.windowHeight) sizeIdx = i;
-    if (Combo(host, "Window size", sizeIdx, sizeIds, sizeNames, 5, false, "Size of the window when not fullscreen."))
+    if (Combo(host, spanish ? "Tamaño de ventana" : "Window size", sizeIdx, sizeIds, sizeNames, 5, false, "Size of the window when not fullscreen."))
     {
         c.windowWidth = sizes[sizeIdx][0];
         c.windowHeight = sizes[sizeIdx][1];
         Changed(host, false);
     }
 
-    ImGui::SeparatorText("Rendering");
+#ifdef CASTAWAY_DXMT
+    ImGui::SeparatorText(spanish ? "Interfaz Retina" : "Retina interface");
+    if (ImGui::SliderInt(spanish ? "Escala de interfaz" : "Interface scale", &c.uiScale, 85, 140, "%d%%"))
+        Config_Save();
+    Help(spanish ? "Ajusta el menú, el panel de ajustes y el HUD del port." :
+                   "Adjusts the port's menu, settings panel and HUD.");
+    ImGui::SeparatorText(spanish ? "Color y nitidez" : "Color and sharpness");
+    if (ImGui::Button(spanish ? "Tropical intenso" : "Intense tropical"))
+    {
+        c.saturation = 135;
+        c.sharpness = 20;
+        Config_Save();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(spanish ? "Color original" : "Original color"))
+    {
+        c.saturation = 100;
+        c.sharpness = 0;
+        Config_Save();
+    }
+    Check(host, "HDR / Apple EDR", c.macHdr, true,
+          "Extends highlights from the original SDR image on HDR-capable macOS displays.");
+    if (ImGui::SliderInt(Config_SpanishInterface() ? "Saturación" : "Saturation", &c.saturation, 0, 160, "%d%%"))
+        Config_Save();
+    if (ImGui::SliderInt(Config_SpanishInterface() ? "Nitidez adaptativa" : "Adaptive sharpness", &c.sharpness, 0, 100, "%d%%"))
+        Config_Save();
+#endif
+    ImGui::SeparatorText(spanish ? "Renderizado" : "Rendering");
     const int scales[] = { 1, 2, 3, 4, 5, 6 };
     const char* scaleNames[] = { "1x (640 x 528)", "2x (1280 x 1056)", "3x (1920 x 1584)", "4x (2560 x 2112)", "5x (3200 x 2640)", "6x (3840 x 3168)" };
-    if (Combo(host, "Internal resolution", c.internalScale, scales, scaleNames, 6, true, "Resolution the game is rendered at."))
+    if (Combo(host, spanish ? "Resolución interna" : "Internal resolution", c.internalScale, scales, scaleNames, 6, true, "Resolution the game is rendered at."))
         Changed(host, true);
     const int anis[] = { 1, 2, 4, 8, 16 };
     const char* anisNames[] = { "Off (as the game sets it)", "2x", "4x", "8x", "16x" };
-    if (Combo(host, "Anisotropic filtering", c.anisotropy, anis, anisNames, 5, false, "Sharper textures at grazing angles."))
+    if (Combo(host, spanish ? "Filtrado anisotrópico" : "Anisotropic filtering", c.anisotropy, anis, anisNames, 5, false, "Sharper textures at grazing angles."))
         Changed(host, false);
     Check(host, "Compile shaders in the background", c.asyncShaders, false,
           "Avoids hitches when new effects appear; an object may then show up a frame late.");
@@ -168,6 +200,11 @@ void InputTab(SettingsHost host)
     }
 
     ImGui::SeparatorText("Buttons");
+    const char* const psLabels[kPadButtonCount] = {
+        "Cruz (X)", "Círculo (O)", "Cuadrado", "Triángulo", "Crear", "PS", "Opciones", "L3", "R3",
+        "L1", "R1", "Cruceta arriba", "Cruceta abajo", "Cruceta izquierda", "Cruceta derecha", "Ninguno"
+    };
+    const char* const* padLabels = Gamepad_IsPlayStation() ? psLabels : kPadButtonLabels;
     if (ImGui::BeginTable("bindings", 3, ImGuiTableFlags_SizingStretchProp))
     {
         ImGui::TableSetupColumn("Wii", ImGuiTableColumnFlags_WidthFixed, 110);
@@ -188,10 +225,10 @@ void InputTab(SettingsHost host)
             for (int b = 0; b < kPadButtonCount; b++)
                 if (Host_StrICmp(pad.c_str(), kPadButtons[b]) == 0) cur = b;
             ImGui::SetNextItemWidth(-1);
-            if (ImGui::BeginCombo("##pad", kPadButtonLabels[cur]))
+            if (ImGui::BeginCombo("##pad", padLabels[cur]))
             {
                 for (int b = 0; b < kPadButtonCount; b++)
-                    if (ImGui::Selectable(kPadButtonLabels[b], b == cur))
+                    if (ImGui::Selectable(padLabels[b], b == cur))
                     {
                         c.padBind[i] = kPadButtons[b];
                         BindingsChanged(host);
@@ -238,10 +275,22 @@ void AudioTab(SettingsHost host)
 void SystemTab(SettingsHost host)
 {
     Config& c = g_config;
-    ImGui::SeparatorText("System");
+    ImGui::SeparatorText(Config_SpanishInterface() ? "Sistema" : "System");
+#ifdef __APPLE__
+    const int interfaceLanguages[] = { 1, 4 };
+    const char* interfaceNames[] = { "English", "Español latino" };
+    if (Combo(host, Config_SpanishInterface() ? "Idioma de la interfaz" : "Interface language",
+              c.interfaceLanguage, interfaceLanguages, interfaceNames, 2, false,
+              Config_SpanishInterface() ? "Cambia los menús propios del port." : "Changes the language of the port's menus."))
+        Config_Save();
+#endif
+#ifdef CASTAWAY_DXMT
+    Check(host, "Save notification", c.showSaveNotice, false,
+          "Shows a small notification when the game writes its save. Press F5 to copy the latest save into backups.");
+#endif
     const int langs[] = { 1, 2, 3, 4, 5, 6, 0 };
     const char* langNames[] = { "English", "German", "French", "Spanish", "Italian", "Dutch", "Japanese" };
-    if (Combo(host, "Language", c.language, langs, langNames, 7, true, "Language of the game's text and menus (the Wii system language)."))
+    if (Combo(host, Config_SpanishInterface() ? "Idioma del juego" : "Game language", c.language, langs, langNames, 7, true, "Language of the game's text and menus (the Wii system language)."))
         Changed(host, true);
     Check(host, "Pause when the window is in the background", c.pauseOnFocusLoss, false,
           "Freeze the game while another window has focus.");
@@ -250,20 +299,30 @@ void SystemTab(SettingsHost host)
 }
 }   // namespace
 
+void SettingsUI_ShowGraphics() { s_showGraphics = true; }
+
 void SettingsUI_Draw(SettingsHost host)
 {
     s_help = nullptr;
     float helpH = ImGui::GetTextLineHeightWithSpacing() * 3;
     if (ImGui::BeginTabBar("settings"))
     {
-        struct Tab { const char* name; void (*draw)(SettingsHost); };
-        static const Tab tabs[] = { { "Video", VideoTab }, { "Input", InputTab }, { "Audio", AudioTab }, { "System", SystemTab } };
+        struct Tab { const char* name; const char* spanish; void (*draw)(SettingsHost); };
+        static const Tab tabs[] = {{ "Video", "Gráficos", VideoTab }, { "Input", "Controles", InputTab },
+                                   { "Audio", "Audio", AudioTab }, { "System", "Sistema", SystemTab }};
+#ifdef __APPLE__
+        const bool spanish = Config_SpanishInterface();
+#else
+        constexpr bool spanish = false;
+#endif
         // test aid: BKR_UI_SHOT_SUBTAB=<tab name> opens that tab first (UI screenshots)
         static const char* shotTab = getenv("BKR_UI_SHOT_SUBTAB");
         static int shotFrames = 0;
         bool pick = shotTab && shotFrames++ < 2;
+        const bool showGraphics = std::exchange(s_showGraphics, false);
         for (auto& t : tabs)
-            if (ImGui::BeginTabItem(t.name, nullptr, pick && !Host_StrICmp(shotTab, t.name) ? ImGuiTabItemFlags_SetSelected : 0))
+            if (ImGui::BeginTabItem(spanish ? t.spanish : t.name, nullptr, ((pick && !Host_StrICmp(shotTab, t.name)) ||
+                               (showGraphics && t.draw == VideoTab)) ? ImGuiTabItemFlags_SetSelected : 0))
             {
                 ImGui::BeginChild("page", ImVec2(0, -helpH), ImGuiChildFlags_None);
                 t.draw(host);
@@ -323,6 +382,9 @@ void SettingsUI_LoadFont()
     const char* windir = getenv("WINDIR");
     std::string base = windir ? windir : "C:\\Windows";
     const char* candidates[] = { "\\Fonts\\segoeui.ttf" };
+#elif defined(__APPLE__)
+    std::string base;
+    const char* candidates[] = { "/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc" };
 #else
     std::string base;
     const char* candidates[] = { "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
@@ -332,8 +394,7 @@ void SettingsUI_LoadFont()
         if (FILE* f = fopen((base + c).c_str(), "rb"))
         {
             fclose(f);
-            ImGui::GetIO().Fonts->AddFontFromFileTTF((base + c).c_str(), 18.0f);
-            return;
+            if (ImGui::GetIO().Fonts->AddFontFromFileTTF((base + c).c_str(), 18.0f)) return;
         }
 }
 

@@ -13,7 +13,11 @@
 #undef D3DCompile
 #undef D3DCreateBlob
 
+#if defined(__x86_64__)
 #define VKD3D_ABI __attribute__((ms_abi))
+#else
+#define VKD3D_ABI
+#endif
 
 namespace
 {

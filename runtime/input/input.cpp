@@ -16,6 +16,9 @@
 #include "../log.h"
 #include "../tas/tas.h"
 #include "../ui/overlay.h"
+#ifdef __APPLE__
+#include "../ios/save_backup.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -66,6 +69,12 @@ struct ScriptEvent
 std::vector<ScriptEvent> s_script;
 size_t s_scriptPos = 0;
 bool s_scripted = false;
+#ifdef CASTAWAY_DXMT
+std::atomic<MacMenuAction> s_selectedMenu{MacMenuAction::None};
+std::atomic<bool> s_selectionPending{false};
+MacMenuAction s_menuAction = MacMenuAction::None;
+uint32_t s_menuField = 0;
+#endif
 std::atomic<uint32_t> s_frame{ 0 };            // video fields (script frames)
 std::vector<std::string> s_pendingShots;       // saved at the next present
 bool s_quitPending = false;
@@ -113,6 +122,12 @@ void RunScript()
             s_scriptPointer.x = (float)atof(a[0].c_str()), s_scriptPointer.y = (float)atof(a[1].c_str()), s_scriptPointer.valid = true;
         else if (e.action == "nopoint")
             s_scriptPointer.valid = false;
+#ifdef CASTAWAY_DXMT
+        else if (e.action == "mac_new_game")
+        {
+            Overlay_SelectNewGameForTest();
+        }
+#endif
         else if (e.action == "shot")
             s_pendingShots.push_back(s_shotDir + "/" + (a.empty() ? "shot_" + std::to_string(frame) : a[0]) + ".bmp");
 #ifdef BKR_CALL_COUNTS
@@ -301,6 +316,34 @@ void Input_Poll()
         }
         if (now < homeUntil) pad.buttons |= BTN_HOME;
     }
+#ifdef CASTAWAY_DXMT
+    if (const auto action = s_selectedMenu.exchange(MacMenuAction::None); action != MacMenuAction::None)
+    {
+        s_menuAction = action;
+        s_menuField = s_frame.load();
+    }
+    if (s_menuAction != MacMenuAction::None)
+    {
+        // Use the same pointer input as the Wii IR controller. Give the menu
+        // time to focus the choice before pressing A, as in the end-to-end test.
+        const uint32_t elapsed = s_frame.load() - s_menuField;
+        if (elapsed >= 37)
+        {
+            s_menuAction = MacMenuAction::None;
+            s_selectionPending = false;
+        }
+        else
+        {
+            const bool isNew = s_menuAction == MacMenuAction::NewGame;
+            const float u = isNew ? 0.599f : 0.578f;
+            const float v = isNew ? 0.833f : 0.632f;
+            ptr = {(u - 0.488f) / 0.360f, (v - 0.462f) / 0.462f, true};
+            pad = {};
+            if (elapsed >= 30) pad.buttons = BTN_A;
+        }
+    }
+    if (Video_StartupConfirms() && s_frame.load() % 24 < 6) pad.buttons |= BTN_A;
+#endif
     pad.connected = true;   // the port always has a controller, so the game never asks for one
     s_pad = pad;
     s_pointer = ptr;
@@ -326,6 +369,14 @@ void Input_SetRumble(bool on)
 }
 
 void Input_StopRumble() { Gamepad_Rumble(false); }
+#ifdef CASTAWAY_DXMT
+void Input_SelectMacMenu(MacMenuAction action)
+{
+    s_selectionPending = true;
+    s_selectedMenu = action;
+}
+bool Input_MacMenuSelectionPending() { return s_selectionPending; }
+#endif
 
 void Input_LoadScript(const char* path)
 {
@@ -371,6 +422,9 @@ static void Quit()
 void Input_OnField()
 {
     uint32_t frame = ++s_frame;
+#ifdef __APPLE__
+    SaveBackup_Tick();
+#endif
     if (Tas_Active())
     {
         std::lock_guard lk(s_lock);

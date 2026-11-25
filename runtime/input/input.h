@@ -52,6 +52,11 @@ void Input_SetRumble(bool on);
 // The bindings in g_config changed.
 void Input_ReloadBindings();
 void Input_StopRumble();
+#ifdef CASTAWAY_DXMT
+enum class MacMenuAction { None, NewGame, Continue };
+void Input_SelectMacMenu(MacMenuAction action);
+bool Input_MacMenuSelectionPending();
+#endif
 
 // Scripted input for automated tests: --script <file> (frame-timed events) or --tas <file>
 // (runtime/tas, docs/tas.md). While a script runs, real devices are ignored and rumble is off.

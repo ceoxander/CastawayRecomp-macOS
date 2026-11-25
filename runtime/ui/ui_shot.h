@@ -1,5 +1,10 @@
 #pragma once
+#if defined(__APPLE__) && !defined(CASTAWAY_DXMT)
+struct ID3D11Device;
+struct ID3D11DeviceContext;
+#else
 #include <d3d11.h>
+#endif
 
 // Test aid: saves the render target currently bound on ctx as a BMP (UI screenshots for
 // automated checks, see BKR_UI_SHOT in launcher.cpp and overlay.cpp).

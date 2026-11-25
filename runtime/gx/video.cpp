@@ -2,6 +2,451 @@
 // also runs SDL's event loop (window, keyboard, mouse and gamepad events); the D3D11 swap
 // chain presents into it from the render thread.
 #include "video.h"
+
+#ifdef __APPLE__
+#include <SDL3/SDL.h>
+#include <atomic>
+#ifdef CASTAWAY_DXMT
+#include "color_macos.h"
+#include <algorithm>
+#include <array>
+#include <functional>
+#include <mutex>
+#include <vector>
+#endif
+#include "../config.h"
+#include "../input/gamepad.h"
+#include "../input/bindings.h"
+#include "../kernel/host.h"
+#include "../log.h"
+#include "../ui/overlay.h"
+#include "../ios/save_backup.h"
+
+#ifdef CASTAWAY_DXMT
+SDL_Texture* Video_CreateAppleLogo(SDL_Renderer* renderer);
+SDL_Texture* Video_CreateStartupCredit(SDL_Renderer* renderer);
+SDL_Texture* Video_CreateStartPrompt(SDL_Renderer* renderer, bool spanish, bool playstation);
+#endif
+
+VideoConfig g_videoConfig;
+ID3D11Device* g_device = nullptr;
+ID3D11DeviceContext* g_ctx = nullptr;
+
+namespace {
+SDL_Window* s_window = nullptr;
+std::atomic<bool> s_closed{false};
+std::atomic<bool> s_focused{true};
+
+#ifdef CASTAWAY_DXMT
+SDL_Renderer* s_renderer = nullptr;
+SDL_Texture* s_texture = nullptr;
+SDL_Texture* s_appleLogo = nullptr;
+SDL_Texture* s_startupCredit = nullptr;
+uint64_t s_introUntil = 0;
+// Auto-confirm the platform-specific Wii setup warnings.
+enum class Startup { Off, WiiPrompt };
+std::atomic<Startup> s_startup{Startup::Off};
+std::atomic<bool> s_startScreen{false};
+SDL_Texture* s_startPrompt = nullptr;
+Uint32 s_frameEvent = 0;
+std::mutex s_frameMutex;
+
+struct Frame
+{
+    int width = 0;
+    int height = 0;
+    std::vector<uint8_t> pixels;
+};
+Frame s_pendingFrame;
+bool s_framePending = false;
+float s_frameTimeMs = 0.0f;
+std::array<float, 512> s_presentTimes{};
+size_t s_presentCount = 0, s_presentIndex = 0;
+uint64_t s_lastPresent = 0;
+bool s_appliedVsync = false;
+
+void PresentOnMainThread(Frame& frame)
+{
+    if (s_appliedVsync != g_videoConfig.vsync)
+    {
+        s_appliedVsync = g_videoConfig.vsync;
+        if (!SDL_SetRenderVSync(s_renderer, s_appliedVsync ? 1 : 0))
+            LOG_WARN("SDL VSync: {}", SDL_GetError());
+    }
+    if (SDL_GetTicks() < s_introUntil)
+    {
+        int width = 0, height = 0;
+        SDL_GetRenderOutputSize(s_renderer, &width, &height);
+        const float size = SDL_min(width, height) * 0.18f;
+        const SDL_FRect logo{(width - size) * 0.5f, (height - size) * 0.5f, size, size};
+        SDL_SetRenderDrawColor(s_renderer, 0, 0, 0, 255);
+        SDL_RenderClear(s_renderer);
+        if (s_appleLogo) SDL_RenderTexture(s_renderer, s_appleLogo, nullptr, &logo);
+        if (s_startupCredit)
+        {
+            const float cw = SDL_min(width * 0.72f, size * 2.65f);
+            const float ch = cw * s_startupCredit->h / s_startupCredit->w;
+            const SDL_FRect credit{(width - cw) * 0.5f, logo.y + size * 1.20f, cw, ch};
+            SDL_RenderTexture(s_renderer, s_startupCredit, nullptr, &credit);
+        }
+        static const char* shotPath = getenv("BKR_UI_SHOT_STARTUP");
+        if (shotPath)
+        {
+            if (SDL_Surface* shot = SDL_RenderReadPixels(s_renderer, nullptr))
+            {
+                SDL_SaveBMP(shot, shotPath);
+                SDL_DestroySurface(shot);
+            }
+            shotPath = nullptr;
+        }
+        SDL_RenderPresent(s_renderer);
+        return;
+    }
+    {
+        std::lock_guard lock(s_frameMutex);
+        if (!s_framePending) return;
+        std::swap(frame, s_pendingFrame);
+        s_framePending = false;
+    }
+
+    int width = 0, height = 0;
+    SDL_GetRenderOutputSize(s_renderer, &width, &height);
+    const float aspect = g_videoConfig.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
+    const float w = SDL_min(float(width), float(height) * aspect);
+    const float h = w / aspect;
+    const SDL_FRect dest{(width - w) * 0.5f, (height - h) * 0.5f, w, h};
+    SDL_SetRenderDrawColor(s_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(s_renderer);
+    if (!Video_DrawColorPass(s_renderer, frame.pixels.data(), frame.width, frame.height, width, height,
+                             dest, g_config.saturation / 100.0f, g_config.sharpness / 100.0f))
+    {
+        if (s_texture && (s_texture->w != frame.width || s_texture->h != frame.height))
+        {
+            SDL_DestroyTexture(s_texture);
+            s_texture = nullptr;
+        }
+        if (!s_texture)
+        {
+            s_texture = SDL_CreateTexture(s_renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING,
+                                          frame.width, frame.height);
+            if (!s_texture) FATAL("SDL frame texture creation failed: {}", SDL_GetError());
+            SDL_SetTextureBlendMode(s_texture, SDL_BLENDMODE_NONE);
+            SDL_SetTextureScaleMode(s_texture, SDL_SCALEMODE_LINEAR);
+        }
+
+        SDL_UpdateTexture(s_texture, nullptr, frame.pixels.data(), frame.width * 4);
+        SDL_RenderTexture(s_renderer, s_texture, nullptr, &dest);
+    }
+    Overlay_Render(width, height);
+    const bool playstationPrompt = s_startScreen && !Input_ScriptActive() && Gamepad_IsPlayStation() &&
+        Host_StrICmp(Binding_Pad(0).c_str(), "a") == 0;
+    const bool spanishPrompt = g_config.language == 4;
+    const bool showStartPrompt = s_startScreen && !Input_ScriptActive() && (spanishPrompt || playstationPrompt);
+    if (showStartPrompt)
+    {
+        const int mode = (spanishPrompt ? 1 : 0) | (playstationPrompt ? 2 : 0);
+        static int previousMode = -1;
+        if (mode != previousMode)
+        {
+            if (s_startPrompt) SDL_DestroyTexture(s_startPrompt);
+            s_startPrompt = Video_CreateStartPrompt(s_renderer, spanishPrompt, playstationPrompt);
+            previousMode = mode;
+        }
+        const float panelWidth = std::min(590.0f, width * 0.72f);
+        const float panelHeight = 68.0f;
+        const SDL_FRect panel{(width - panelWidth) * 0.5f, height * 0.625f, panelWidth, panelHeight};
+        SDL_SetRenderDrawBlendMode(s_renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(s_renderer, 5, 27, 37, 246);
+        SDL_RenderFillRect(s_renderer, &panel);
+        const SDL_FRect label{panel.x + 12, panel.y + 5, panel.w - 24, panel.h - 10};
+        if (s_startPrompt) SDL_RenderTexture(s_renderer, s_startPrompt, nullptr, &label);
+        SDL_SetRenderDrawBlendMode(s_renderer, SDL_BLENDMODE_NONE);
+        static const char* startShot = getenv("BKR_UI_SHOT_START_PROMPT");
+        if (startShot)
+        {
+            if (SDL_Surface* shot = SDL_RenderReadPixels(s_renderer, nullptr))
+            {
+                SDL_SaveBMP(shot, startShot);
+                SDL_DestroySurface(shot);
+                LOG_INFO("Spanish title prompt screenshot saved to {}", startShot);
+            }
+            startShot = nullptr;
+        }
+    }
+    if (SDL_RenderPresent(s_renderer))
+    {
+        const uint64_t now = SDL_GetTicksNS();
+        if (s_lastPresent && now - s_lastPresent < 5000000000ull)
+        {
+            const float elapsed = float(now - s_lastPresent) / 1000000.0f;
+            if (elapsed < 250.0f)
+                s_frameTimeMs = s_frameTimeMs > 0.0f ? s_frameTimeMs * 0.9f + elapsed * 0.1f : elapsed;
+            s_presentTimes[s_presentIndex++ % s_presentTimes.size()] = elapsed;
+            s_presentCount = std::min(s_presentCount + 1, s_presentTimes.size());
+        }
+        s_lastPresent = now;
+    }
+}
+#endif
+}
+
+const char* Video_DeviceHelp() { return "Cannot initialize the macOS video subsystem."; }
+
+bool Video_Init()
+{
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5, "1");
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
+    {
+        LOG_ERROR("SDL video init failed: {}", SDL_GetError());
+        return false;
+    }
+    SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (g_videoConfig.fullscreen) flags |= SDL_WINDOW_FULLSCREEN;
+    s_window = SDL_CreateWindow("CastawayRecomp", g_videoConfig.windowWidth,
+                                g_videoConfig.windowHeight, flags);
+    if (!s_window)
+    {
+        LOG_ERROR("SDL_CreateWindow failed: {}", SDL_GetError());
+        return false;
+    }
+    s_focused = (SDL_GetWindowFlags(s_window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+    Gamepad_Init();
+#ifdef CASTAWAY_DXMT
+    s_frameEvent = SDL_RegisterEvents(1);
+    if (!s_frameEvent) return false;
+    const bool dummy = strcmp(SDL_GetCurrentVideoDriver(), "dummy") == 0;
+    if (g_config.macHdr && !dummy)
+    {
+        const SDL_PropertiesID properties = SDL_CreateProperties();
+        SDL_SetPointerProperty(properties, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, s_window);
+        SDL_SetStringProperty(properties, SDL_PROP_RENDERER_CREATE_NAME_STRING, "metal");
+        SDL_SetNumberProperty(properties, SDL_PROP_RENDERER_CREATE_OUTPUT_COLORSPACE_NUMBER, SDL_COLORSPACE_SRGB_LINEAR);
+        s_renderer = SDL_CreateRendererWithProperties(properties);
+        SDL_DestroyProperties(properties);
+        if (!s_renderer) LOG_WARN("HDR renderer unavailable, using SDR: {}", SDL_GetError());
+    }
+    if (!s_renderer) s_renderer = SDL_CreateRenderer(s_window, dummy ? "software" : "metal");
+    if (!s_renderer)
+    {
+        LOG_ERROR("SDL renderer creation failed: {}", SDL_GetError());
+        return false;
+    }
+    s_appliedVsync = g_videoConfig.vsync;
+    if (s_appliedVsync) SDL_SetRenderVSync(s_renderer, 1);
+    const D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+    const HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+        &level, 1, D3D11_SDK_VERSION, &g_device, nullptr, &g_ctx);
+    if (FAILED(hr))
+    {
+        LOG_ERROR("DXMT D3D11CreateDevice failed {:08x}", static_cast<uint32_t>(hr));
+        return false;
+    }
+    Overlay_InitSDL(s_window, s_renderer);
+    if (!dummy && (!Input_ScriptActive() || getenv("BKR_UI_SHOT_STARTUP")))
+    {
+        s_appleLogo = Video_CreateAppleLogo(s_renderer);
+        s_startupCredit = Video_CreateStartupCredit(s_renderer);
+        s_introUntil = SDL_GetTicks() + 2500;
+    }
+    LOG_INFO("GX: DXMT device, SDL {} presentation", SDL_GetRendererName(s_renderer));
+#endif
+    return true;
+}
+
+void Video_RunEventLoop()
+{
+    SDL_Event e;
+#ifdef CASTAWAY_DXMT
+    Frame frame;
+    bool overlayOpen = false;
+#endif
+    while (!s_closed)
+    {
+        const bool received = SDL_WaitEventTimeout(&e, 100);
+#ifdef CASTAWAY_DXMT
+        if (const bool open = Overlay_IsOpen(); open != overlayOpen)
+        {
+            overlayOpen = open;
+            if (open) SDL_StartTextInput(s_window);
+            else SDL_StopTextInput(s_window);
+        }
+        PresentOnMainThread(frame);
+        if (received && (e.type == s_frameEvent || Overlay_HandleEvent(e))) continue;
+#endif
+        if (!received) continue;
+        Gamepad_HandleEvent(e);
+        switch (e.type)
+        {
+        case SDL_EVENT_QUIT:
+        case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+            s_closed = true;
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_GAINED:
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+        {
+            bool focused = e.type == SDL_EVENT_WINDOW_FOCUS_GAINED;
+            s_focused = focused;
+            if (!focused) Input_StopRumble();
+            extern std::atomic<bool> g_pauseRequested;
+            g_pauseRequested = g_config.pauseOnFocusLoss && !focused;
+            break;
+        }
+        case SDL_EVENT_KEY_DOWN:
+            if (!e.key.repeat && e.key.scancode == SDL_SCANCODE_F5) SaveBackup_Request();
+            if (!e.key.repeat && (e.key.scancode == SDL_SCANCODE_F11 ||
+                (e.key.scancode == SDL_SCANCODE_RETURN && (e.key.mod & SDL_KMOD_ALT))))
+                Video_SetFullscreen(!(SDL_GetWindowFlags(s_window) & SDL_WINDOW_FULLSCREEN));
+            break;
+        }
+    }
+    Input_StopRumble();
+}
+
+#ifdef CASTAWAY_DXMT
+float Video_PresentationFrameTimeMs() { return s_frameTimeMs; }
+float Video_PresentationOnePercentLow()
+{
+    if (s_presentCount < 100) return 0.0f;
+    auto samples = s_presentTimes;
+    std::sort(samples.begin(), samples.begin() + s_presentCount, std::greater<float>());
+    const size_t slowCount = std::max<size_t>(1, (s_presentCount + 99) / 100);
+    float total = 0.0f;
+    for (size_t i = 0; i < slowCount; ++i) total += samples[i];
+    return total > 0 ? 1000.0f * slowCount / total : 0.0f;
+}
+
+void Video_NotifyGuestState(uint32_t machine, uint32_t vtable)
+{
+    static uint32_t menuMachine = 0;
+    constexpr uint32_t mainMenu = 0x8042d530;  // R42E69 TheSimsMainMenuState
+    if (vtable == mainMenu && Overlay_UseNativeMenu())
+    {
+        menuMachine = machine;
+        Overlay_NotifyGuestMainMenu(true);
+    }
+    else if (machine && machine == menuMachine)
+    {
+        menuMachine = 0;
+        Overlay_NotifyGuestMainMenu(false);
+    }
+    // R42E69 boot state vtables, as identified in the game's linker symbols.
+    switch (vtable)
+    {
+    case 0x8042d62c:  // TheSimsNGCHealthWarningState
+    case 0x8042d608:  // TheSimsWiiNunchuckRequiredState
+        s_startup = Startup::WiiPrompt;
+        s_startScreen = false;
+        break;
+    case 0x8042d16c:  // StartScreenStartState; the USA movie leaves this prompt in English
+        s_startup = Startup::Off;
+        s_startScreen = true;
+        break;
+    default:
+        s_startup = Startup::Off;
+        s_startScreen = false;
+        break;
+    }
+}
+
+bool Video_StartupConfirms() { return s_startup == Startup::WiiPrompt; }
+
+void Video_Present(ID3D11ShaderResourceView* view, float u0, float v0, float u1, float v1)
+{
+    ID3D11Resource* resource = nullptr;
+    view->GetResource(&resource);
+    auto* texture = static_cast<ID3D11Texture2D*>(resource);
+    D3D11_TEXTURE2D_DESC desc{};
+    texture->GetDesc(&desc);
+    const UINT x = static_cast<UINT>(u0 * desc.Width);
+    const UINT y = static_cast<UINT>(v0 * desc.Height);
+    const UINT right = static_cast<UINT>(u1 * desc.Width);
+    const UINT bottom = static_cast<UINT>(v1 * desc.Height);
+    desc.Width = right - x;
+    desc.Height = bottom - y;
+
+    // Keep staging copies in flight and only map completed work. GX and guest
+    // interrupt delivery should never wait for the Metal presentation readback.
+    static std::array<ID3D11Texture2D*, 3> staging{};
+    static UINT stagedWidth = 0, stagedHeight = 0;
+    static size_t oldest = 0, queued = 0;
+    if (!staging.front() || stagedWidth != desc.Width || stagedHeight != desc.Height)
+    {
+        oldest = queued = 0;
+        desc.BindFlags = 0;
+        desc.MiscFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        desc.Usage = D3D11_USAGE_STAGING;
+        for (auto*& target : staging)
+        {
+            if (target) target->Release();
+            target = nullptr;
+            if (FAILED(g_device->CreateTexture2D(&desc, nullptr, &target)))
+                FATAL("DXMT could not allocate an XFB staging texture");
+        }
+        stagedWidth = desc.Width;
+        stagedHeight = desc.Height;
+    }
+
+    if (queued < staging.size())
+    {
+        const D3D11_BOX box{x, y, 0, right, bottom, 1};
+        g_ctx->CopySubresourceRegion(staging[(oldest + queued) % staging.size()], 0,
+                                     0, 0, 0, texture, 0, &box);
+        ++queued;
+        g_ctx->Flush();
+    }
+    resource->Release();
+
+    auto* ready = staging[oldest];
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    HRESULT result = g_ctx->Map(ready, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+    if (result == DXGI_ERROR_WAS_STILL_DRAWING) return;
+    if (FAILED(result)) FATAL("DXMT could not read the XFB staging texture ({:08x})", (uint32_t)result);
+    oldest = (oldest + 1) % staging.size();
+    --queued;
+
+    static Frame frame;
+    frame.width = static_cast<int>(desc.Width);
+    frame.height = static_cast<int>(desc.Height);
+    const size_t pitch = size_t(desc.Width) * 4;
+    frame.pixels.resize(pitch * desc.Height);
+    auto* pixels = static_cast<const uint8_t*>(mapped.pData);
+    for (UINT row = 0; row < desc.Height; ++row)
+        memcpy(frame.pixels.data() + row * pitch, pixels + row * mapped.RowPitch, pitch);
+    g_ctx->Unmap(ready, 0);
+
+    bool wake;
+    {
+        std::lock_guard lock(s_frameMutex);
+        std::swap(frame, s_pendingFrame);
+        wake = !s_framePending;
+        s_framePending = true;
+    }
+    if (wake)
+    {
+        SDL_Event event{};
+        event.type = s_frameEvent;
+        SDL_PushEvent(&event);
+    }
+}
+#else
+void Video_Present(ID3D11ShaderResourceView*, float, float, float, float) {}
+#endif
+bool Video_WindowClosed() { return s_closed; }
+void Video_SetFullscreen(bool on)
+{
+    if (s_window) SDL_SetWindowFullscreen(s_window, on);
+}
+void Video_SetWindowSize(int width, int height)
+{
+    if (s_window && !(SDL_GetWindowFlags(s_window) & SDL_WINDOW_FULLSCREEN))
+        SDL_SetWindowSize(s_window, width, height);
+}
+bool Video_HasFocus() { return s_focused; }
+void* Video_Window() { return s_window; }
+#else
 #include "../config.h"
 #include "../log.h"
 #include "../input/gamepad.h"
@@ -392,3 +837,5 @@ static void PushUserEvent(Uint32 type, Sint32 code)
 void Video_SetFullscreen(bool on) { PushUserEvent(s_evtFullscreen, on ? 1 : 0); }
 void Video_SetWindowSize(int w, int h) { PushUserEvent(s_evtWindowSize, (Sint32)((std::min(w, 0x7FFF) << 16) | std::min(h, 0xFFFF))); }
 void* Video_Window() { return s_window; }
+
+#endif

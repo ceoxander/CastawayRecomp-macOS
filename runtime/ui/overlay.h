@@ -1,7 +1,20 @@
 #pragma once
+#if defined(__APPLE__) && !defined(CASTAWAY_DXMT)
+struct ID3D11Device;
+struct ID3D11DeviceContext;
+#else
 #include <d3d11.h>
+#endif
 
 struct SDL_Window;
+#ifdef CASTAWAY_DXMT
+struct SDL_Renderer;
+void Overlay_InitSDL(SDL_Window* window, SDL_Renderer* renderer);
+void Overlay_NotifyGuestMainMenu(bool active);
+void Overlay_NewGameDialogClosed(bool accepted);
+void Overlay_SelectNewGameForTest();
+bool Overlay_UseNativeMenu();
+#endif
 union SDL_Event;
 
 // In-game settings overlay (Dear ImGui), opened with F1 or both gamepad stick clicks.

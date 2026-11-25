@@ -1,12 +1,19 @@
 #pragma once
 #include <cstdint>
+#include "../config.h"
+#if defined(__APPLE__) && !defined(CASTAWAY_DXMT)
+struct ID3D11Device;
+struct ID3D11DeviceContext;
+struct ID3D11ShaderResourceView;
+#else
 #include <d3d11.h>
+#endif
 
 struct VideoConfig
 {
     int windowWidth = 1280;
     int windowHeight = 720;
-    int internalScale = 3;     // EFB resolution multiplier
+    int internalScale = kDefaultInternalScale;     // EFB resolution multiplier
     bool vsync = false;        // the game paces itself from VI interrupts
     bool widescreen = true;    // present 16:9
     bool fullscreen = false;
@@ -17,6 +24,15 @@ extern ID3D11Device* g_device;
 extern ID3D11DeviceContext* g_ctx;
 
 bool Video_Init();
+#ifdef __APPLE__
+void Video_RunEventLoop();
+#ifdef CASTAWAY_DXMT
+void Video_NotifyGuestState(uint32_t machine, uint32_t vtable);
+float Video_PresentationFrameTimeMs();
+float Video_PresentationOnePercentLow();
+bool Video_StartupConfirms();
+#endif
+#endif
 // What to tell the player when no Direct3D 11 device can be created
 const char* Video_DeviceHelp();
 // Presents the given texture region (an XFB copy) to the window.

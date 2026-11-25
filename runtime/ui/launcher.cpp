@@ -1,3 +1,4 @@
+#ifndef __APPLE__
 // Launcher shown on every start: game data status (install / repair from the disc image,
 // full file check), settings, and Play. Its own small window and D3D11 device; both are
 // gone before the game creates its window.
@@ -381,3 +382,5 @@ bool Launcher_Run(std::string& dataDir, const std::string& isoPath, const fs::pa
     LOG_INFO("launcher: {}", play ? "play" : "quit");
     return play;
 }
+
+#endif

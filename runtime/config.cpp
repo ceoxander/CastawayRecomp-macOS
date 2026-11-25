@@ -26,6 +26,10 @@ std::string Config_Text(const Config& c)
     std::string s;
     s += "; CastawayRecomp settings (also editable in the launcher and in game: F1 or both stick clicks)\n\n";
     s += "[Video]\n";
+#ifdef __APPLE__
+    s += std::format("hdr = {}\nsaturation = {}\nsharpness = {}\nui_scale = {}\n",
+                     Bool(c.macHdr), c.saturation, c.sharpness, c.uiScale);
+#endif
     s += "; internal resolution multiplier (1 = 640x528, 3 = 1920x1584)\n";
     s += std::format("internal_scale = {}\n", c.internalScale);
     s += std::format("window_width = {}\nwindow_height = {}\n", c.windowWidth, c.windowHeight);
@@ -43,6 +47,10 @@ std::string Config_Text(const Config& c)
     s += "[System]\n";
     s += "; english, german, french, spanish, italian, dutch, japanese\n";
     s += std::format("language = {}\n", kLanguages[std::clamp(c.language, 0, 6)]);
+#ifdef __APPLE__
+    s += std::format("interface_language = {}\n", c.interfaceLanguage == 4 ? "spanish" : "english");
+#endif
+    s += std::format("show_save_notice = {}\n", Bool(c.showSaveNotice));
     s += "; freeze the game while its window is in the background\n";
     s += std::format("pause_on_focus_loss = {}\n\n", Bool(c.pauseOnFocusLoss));
     s += "[Audio]\n";
@@ -110,15 +118,18 @@ static bool ParseBool(const std::string& v)
     return l == "1" || l == "true" || l == "yes" || l == "on";
 }
 
-static int ParseLanguage(const std::string& v)
+int Config_ParseLanguage(const std::string& v)
 {
     std::string l = Lower(v);
+    if (l == "es" || l == "español" || l == "espanol" || l == "español latino" || l == "es-419") return 4;
     for (int i = 0; i < 7; i++)
         if (l == kLanguages[i]) return i;
     if (!l.empty() && isdigit((unsigned char)l[0])) return std::clamp(atoi(l.c_str()), 0, 6);
     LOG_WARN("config: unknown language '{}', using english", v);
     return 1;
 }
+
+bool Config_SpanishInterface() { return g_config.interfaceLanguage == 4; }
 
 void Config_Load(const std::string& path)
 {
@@ -146,7 +157,11 @@ void Config_Load(const std::string& path)
         Config& c = g_config;
         if (section == "video")
         {
-            if (key == "internal_scale") c.internalScale = std::clamp(atoi(val.c_str()), 1, 8);
+            if (key == "hdr") c.macHdr = ParseBool(val);
+            else if (key == "saturation") c.saturation = std::clamp(atoi(val.c_str()), 0, 160);
+            else if (key == "sharpness") c.sharpness = std::clamp(atoi(val.c_str()), 0, 100);
+            else if (key == "ui_scale") c.uiScale = std::clamp(atoi(val.c_str()), 85, 140);
+            else if (key == "internal_scale") c.internalScale = std::clamp(atoi(val.c_str()), 1, 8);
             else if (key == "window_width") c.windowWidth = std::max(320, atoi(val.c_str()));
             else if (key == "window_height") c.windowHeight = std::max(240, atoi(val.c_str()));
             else if (key == "fullscreen") c.fullscreen = ParseBool(val);
@@ -160,7 +175,11 @@ void Config_Load(const std::string& path)
         }
         else if (section == "system")
         {
-            if (key == "language") c.language = ParseLanguage(val);
+            if (key == "language") c.language = Config_ParseLanguage(val);
+#ifdef __APPLE__
+            else if (key == "interface_language") c.interfaceLanguage = Config_ParseLanguage(val) == 4 ? 4 : 1;
+#endif
+            else if (key == "show_save_notice") c.showSaveNotice = ParseBool(val);
             else if (key == "pause_on_focus_loss") c.pauseOnFocusLoss = ParseBool(val);
         }
         else if (section == "audio")

@@ -1,5 +1,11 @@
 #include "ui_shot.h"
 
+#if defined(__APPLE__) && !defined(CASTAWAY_DXMT)
+bool UI_SaveBoundTarget(ID3D11Device*, ID3D11DeviceContext*, const char*) {
+    return false;
+}
+#else
+
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -59,3 +65,5 @@ bool UI_SaveBoundTarget(ID3D11Device* dev, ID3D11DeviceContext* ctx, const char*
     st->Release();
     return f != nullptr;
 }
+
+#endif

@@ -39,6 +39,7 @@ FILE* Host_Open(const std::filesystem::path& p, const char* mode);
 int Host_Seek64(FILE* f, int64_t offset, int whence);
 // The running executable
 std::filesystem::path Host_ExePath();
+std::filesystem::path Host_AppDir();
 // Case-insensitive ASCII compare (like strcmp)
 int Host_StrICmp(const char* a, const char* b);
 // Remembers the command line (Host_Restart starts the game again with it)

@@ -1,6 +1,20 @@
 // Custom texture packs in Dolphin's format (see hires.h). PNG files go through SDL's
 // loader and writer, DDS through the small reader below.
 #include "hires.h"
+
+#if defined(__APPLE__) && !defined(CASTAWAY_DXMT)
+#include <cstdint>
+#include <string>
+
+void HiRes_Init(const std::string&) {}
+bool HiRes_Enabled() { return false; }
+ID3D11ShaderResourceView* HiRes_Find(const uint8_t*, uint32_t, const uint8_t*, uint32_t,
+                                     uint32_t, uint32_t, uint32_t, uint64_t) {
+    return nullptr;
+}
+void HiRes_Dump(const uint8_t*, uint32_t, const uint8_t*, uint32_t,
+                uint32_t, uint32_t, uint32_t, uint64_t, const char*) {}
+#else
 #include "video.h"
 #include "texture_decode.h"
 #include "../kernel/host.h"
@@ -193,7 +207,7 @@ void HiRes_Init(const std::string& configuredDir)
         roots.push_back(configuredDir);
     else
     {
-        fs::path exe = Host_ExePath().parent_path();
+        fs::path exe = Host_AppDir();
         roots.push_back(exe / "textures");
         roots.push_back(exe / "game" / "textures");
         roots.push_back(exe / ".." / "game" / "textures");
@@ -227,6 +241,12 @@ void HiRes_Init(const std::string& configuredDir)
 }
 
 bool HiRes_Enabled() { return !s_files.empty(); }
+
+bool HiRes_IsWiiBackPrompt(const uint8_t* data, uint32_t size)
+{
+    // R42E69's standalone 32x32 RGBA8 Wii B prompt.
+    return size == 4096 && XXH64(data, size) == 0x2ddb85696b34b43bull;
+}
 
 // Dolphin's texture names for this texture: [0] exact, [1] palette wildcard (CI only).
 static void MakeNames(const uint8_t* data, uint32_t dataSize, const uint8_t* tlut, uint32_t tlutSize, uint32_t fmt, uint32_t w, uint32_t h,
@@ -295,7 +315,7 @@ void HiRes_Dump(const uint8_t* data, uint32_t dataSize, const uint8_t* tlut, uin
     static fs::path dir;
     if (dir.empty())
     {
-        dir = Host_ExePath().parent_path() / "dump" / "textures" / Region_Current().gameId;
+        dir = Host_AppDir() / "dump" / "textures" / Region_Current().gameId;
         std::error_code ec;
         fs::create_directories(dir, ec);
     }
@@ -310,3 +330,5 @@ void HiRes_Dump(const uint8_t* data, uint32_t dataSize, const uint8_t* tlut, uin
         SDL_DestroySurface(img);
     }
 }
+
+#endif

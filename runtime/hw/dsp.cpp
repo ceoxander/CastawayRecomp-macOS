@@ -8,6 +8,7 @@
 #include "../audio/audio_out.h"
 #include "../log.h"
 
+#include <algorithm>
 #include <deque>
 
 // ------------------------------------------------------------------ mail handler
@@ -245,7 +246,11 @@ static void AIDmaEvent(uint64_t, int64_t)
     s_aiNextTb += ticks ? ticks : 1000;
     uint64_t now = Timebase_Now();
     if (s_aiNextTb + TB_FREQ / 10 < now) s_aiNextTb = now + ticks;
-    Sched_ScheduleAt(s_evtAIDma, s_aiNextTb);
+    // Give the guest a chance to acknowledge AID and schedule the next AX mix
+    // before another overdue completion consumes the same buffer. Keep the
+    // original deadline as the clock so short stalls do not change pitch or rate.
+    constexpr uint64_t irqServiceTicks = TB_FREQ / 10000;
+    Sched_ScheduleAt(s_evtAIDma, std::max(s_aiNextTb, now + irqServiceTicks));
 }
 
 static void DspIntEvent(uint64_t, int64_t)

@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CastawayRecomp · Port a Mac</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b1218; --panel:#111d26; --border:#253644; --ink:#edf5f7; --muted:#a6bac5; --sea:#74efd1; --orange:#ffbb76; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:radial-gradient(ellipse at 82% 0%, #112e38 0%, transparent 46%), var(--bg); color:var(--ink); font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  main { margin:0 auto; width:min(1120px, calc(100% - 36px)); padding:44px 0 64px; }
+  header { display:flex; justify-content:space-between; align-items:end; gap:24px; padding:0 0 24px; border-bottom:1px solid var(--border); }
+  h1,h2,p { margin:0; }
+  h1 { font-size:clamp(2.25rem, 5vw, 4.25rem); line-height:1.04; letter-spacing:-.065em; }
+  h2 { font-size:1.12rem; letter-spacing:-.025em; }
+  .platform { color:var(--sea); margin-bottom:10px; }
+  #connection { color:var(--sea); white-space:nowrap; font-size:.9rem; }
+  #connection::before { content:""; display:inline-block; width:7px; height:7px; border-radius:50%; background:currentColor; margin-right:8px; vertical-align:2px; }
+  #connection.offline { color:var(--orange); }
+  section { padding:20px 22px; border:1px solid var(--border); border-radius:14px; background:var(--panel); min-width:0; }
+  .grid { display:grid; gap:14px; margin-top:14px; grid-template-columns:1fr 1fr; }
+  .row { display:flex; justify-content:space-between; align-items:baseline; gap:14px; }
+  .value { font:600 1.15rem ui-monospace,monospace; color:var(--sea); flex-shrink:0; }
+  progress { display:block; width:100%; height:10px; margin:14px 0 10px; border:0; border-radius:7px; overflow:hidden; background:#273843; }
+  progress::-webkit-progress-bar { background:#273843; }
+  progress::-webkit-progress-value { background:linear-gradient(90deg,#2fbead,var(--sea)); transition:width .35s; }
+  progress::-moz-progress-bar { background:var(--sea); }
+  .muted { color:var(--muted); font-size:.9rem; }
+  ul { list-style:none; padding:0; margin:10px 0 0; }
+  li { display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-top:1px solid #263642; font-size:.92rem; }
+  li:first-child { border-top:0; }
+  .check { color:var(--sea); }
+  .pending { color:var(--orange); }
+  .state { font-size:.85rem; text-align:right; }
+  .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0 0; }
+  .metric { min-width:0; padding:10px 14px; border-radius:10px; background:var(--bg); }
+  .metric b { display:block; font-variant-numeric:tabular-nums; font-size:1.4rem; font-weight:600; }
+  .wide { grid-column:1 / -1; }
+  #timeline { position:relative; }
+  #timeline li { display:grid; grid-template-columns:76px minmax(0,1fr) auto; gap:14px; align-items:start; }
+  #timeline li.enter { animation:arrive .65s ease both; }
+  #timeline b { font-weight:650; }
+  #timeline p { line-height:1.4; }
+  @keyframes arrive { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+  @media (prefers-reduced-motion:reduce) { * { animation:none !important; transition:none !important; } }
+  footer { display:flex; justify-content:space-between; gap:12px; margin-top:18px; }
+  @media (max-width:720px) { main { padding-top:24px; } header { align-items:start; flex-direction:column; gap:12px; } .grid { grid-template-columns:1fr; } footer { flex-direction:column; } }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div><p class="platform">macOS · Apple Silicon</p><h1>CastawayRecomp</h1></div>
+  <p id="connection" role="status">Conectando</p>
+</header>
+<div class="grid">
+  <section aria-labelledby="port-label">
+    <div class="row"><h2 id="port-label">Port jugable</h2><span class="value" id="port-value">—</span></div>
+    <progress id="port" max="8" value="0" aria-labelledby="port-label"></progress>
+    <p class="muted">Hitos verificados en este Mac</p>
+  </section>
+  <section aria-labelledby="build-label">
+    <div class="row"><h2 id="build-label">Compilación</h2><span class="value" id="build-value">—</span></div>
+    <progress id="build" max="1" value="0" aria-labelledby="build-label"></progress>
+    <p class="muted" id="build-detail">Esperando actividad de Ninja</p>
+  </section>
+  <section aria-labelledby="polish-label">
+    <div class="row"><h2 id="polish-label">Pulido y mejoras</h2><span class="value" id="polish-value">—</span></div>
+    <progress id="polish" max="10" value="0" aria-labelledby="polish-label"></progress>
+    <p class="muted" id="polish-detail">Comprobaciones de la etapa de pulido</p>
+  </section>
+  <section aria-labelledby="game-label">
+    <div class="row"><h2 id="game-label">Prueba integral del juego</h2><span class="value" id="game-value">—</span></div>
+    <progress id="game" max="12" value="0" aria-labelledby="game-label"></progress>
+    <p class="muted" id="game-detail">Nueva partida, isla, movimiento, guardado y recarga</p>
+  </section>
+  <section class="wide">
+    <h2>Actividad en vivo</h2>
+    <ul id="timeline" aria-live="polite"></ul>
+  </section>
+  <section>
+    <h2>Hitos del port</h2>
+    <ul id="milestones"></ul>
+  </section>
+  <section>
+    <h2>Mejoras de macOS</h2>
+    <ul id="features"></ul>
+  </section>
+  <section>
+    <h2>Última ejecución</h2>
+    <div class="metrics">
+      <div class="metric"><span class="muted">Juego</span><b id="fps">—</b></div>
+      <div class="metric"><span class="muted">Señal Wii</span><b id="vi">—</b></div>
+      <div class="metric"><span class="muted">Audio</span><b id="audio">—</b></div>
+    </div>
+    <p id="audio-details" class="muted"></p>
+  </section>
+  <section>
+    <h2>Partida automatizada</h2>
+    <p id="test-summary" class="muted">Esperando registro de la prueba</p>
+    <ul id="checks"></ul>
+  </section>
+  <section class="wide">
+    <h2>Ideas para la siguiente etapa</h2>
+    <ul>
+      <li><span>Ajustes automáticos al cambiar de monitor</span><span class="check state">Elegida</span></li>
+      <li><span>Comparar color original y Tropical intenso con un interruptor</span><span class="state">Idea</span></li>
+      <li><span>Partidas separadas por perfil, con historial de respaldos</span><span class="state">Idea</span></li>
+    </ul>
+  </section>
+</div>
+<footer class="muted"><span>Datos del repositorio local</span><time id="updated"></time></footer>
+</main>
+<script>
+const byId = id => document.getElementById(id);
+function entries(id, rows) {
+  byId(id).replaceChildren(...rows.map(([label, state, tone]) => {
+    const row = document.createElement('li');
+    const title = document.createElement('span');
+    title.textContent = label;
+    const tag = document.createElement('span');
+    tag.className = 'state ' + (tone || '');
+    tag.textContent = state;
+    row.append(title, tag);
+    return row;
+  }));
+}
+function bar(id, value, total) {
+  byId(id).max = Math.max(1, total);
+  byId(id).value = value;
+  byId(id + '-value').textContent = total ? value + ' / ' + total : '—';
+}
+let lastTimeline = '';
+const seenTimeline = new Set();
+function showTimeline(events) {
+  const signature = JSON.stringify(events);
+  if (signature === lastTimeline) return;
+  lastTimeline = signature;
+  byId('timeline').replaceChildren(...events.map(event => {
+    const row = document.createElement('li');
+    if (!seenTimeline.has(event.key)) row.className = 'enter';
+    seenTimeline.add(event.key);
+    const time = document.createElement('time');
+    time.className = 'muted';
+    time.dateTime = event.time;
+    time.textContent = new Date(event.time).toLocaleTimeString('es');
+    const copy = document.createElement('div');
+    const title = document.createElement('b');
+    title.textContent = event.title;
+    const text = document.createElement('p');
+    text.className = 'muted';
+    text.textContent = event.description;
+    copy.append(title, text);
+    const badge = document.createElement('span');
+    badge.className = 'state ' + (event.state === 'Verificado' ? 'check' : 'pending');
+    badge.textContent = event.state;
+    row.append(time, copy, badge);
+    return row;
+  }));
+}
+async function refresh() {
+  const connection = byId('connection');
+  try {
+    const response = await fetch('/api/status', {cache:'no-store'});
+    if (!response.ok) throw new Error(response.status);
+    const data = await response.json();
+    connection.textContent = 'En vivo';
+    connection.className = '';
+    bar('port', data.milestones.filter(([, verified]) => verified).length, data.milestones.length);
+    bar('build', data.build.done, data.build.total);
+    bar('game', data.testPassed, 12);
+    byId('game-detail').textContent = data.testComplete
+      ? 'Prueba completa · Nueva partida, isla, guardado y recarga'
+      : 'Nueva partida, isla, movimiento, guardado y recarga';
+    if (data.polish) {
+      bar('polish', data.polish.filter(([, done]) => done).length, data.polish.length);
+      const next = data.polish.find(([, done]) => !done);
+      byId('polish-detail').textContent = next ? 'Pendiente en esta etapa · ' + next[0] : 'Todas las comprobaciones de esta etapa están listas';
+    }
+    byId('build-detail').textContent = data.build.failed ? 'La compilación registró un error' :
+        (data.build.total && data.build.done === data.build.total ? 'Compilación y firma terminadas' : 'Leyendo el último registro de Ninja');
+    entries('milestones', data.milestones.map(([name, yes]) => [name, yes ? 'Verificado' : 'Pendiente', yes ? 'check' : 'pending']));
+    entries('features', data.features);
+    showTimeline(data.timeline || []);
+    if (data.sample) {
+      const [fps, vi, , underruns, drops, repeats, rate] = data.sample;
+      byId('fps').textContent = fps.toFixed(1) + ' fps';
+      byId('vi').textContent = vi.toFixed(1) + ' Hz';
+      byId('audio').textContent = (rate / 1000).toFixed(1) + ' kHz';
+      byId('audio-details').textContent = repeats + ' repeticiones · ' + drops + ' descartes · ' + underruns + ' interrupciones';
+    }
+    byId('test-summary').textContent = data.testComplete ? data.testPassed + ' comprobaciones aprobadas · 0 fallos' : data.testPassed + ' comprobaciones aprobadas hasta ahora';
+    entries('checks', data.checks.map(check => [check, '', '']));
+    byId('updated').textContent = 'Actualizado ' + new Date(data.time).toLocaleTimeString('es');
+  } catch {
+    connection.textContent = 'Conexión local interrumpida';
+    connection.className = 'offline';
+  }
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

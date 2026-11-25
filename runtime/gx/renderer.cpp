@@ -1,11 +1,45 @@
 // GX -> Direct3D 11 renderer.
 #include "../kernel/host.h"
+#include <atomic>
+
+#if defined(__APPLE__) && !defined(CASTAWAY_DXMT)
+#include <cstdint>
+#include <string>
+#include "gx_state.h"
+#include "video.h"
+
+std::atomic<bool> g_asyncShaders{false};
+uint32_t g_captureFrame = false;
+int g_dbgNoCull = false;
+int g_dbgNoDepth = false;
+bool g_dumpTextures = false;
+uint32_t g_framesPresented = 0;
+int g_screenshotEvery = 0;
+uint32_t g_screenshotStart = 0;
+
+uint32_t EFB_Read32(uint32_t) { return 0; }
+void EFB_Write32(uint32_t, uint32_t) {}
+void Render_Draw(int, int, uint32_t, const uint8_t*, const struct VertexLayout&) {}
+void Render_OnBP(uint32_t, uint32_t, uint32_t) {}
+void Render_OnCP(uint32_t) {}
+void Render_OnXF(uint32_t, uint32_t) {}
+void Render_Flush() {}
+int Renderer_PrecompileShaders(const std::string&) { return 1; }
+void Renderer_Init() {}
+void Renderer_ResetSamplers() {}
+#else
 #include "gx_state.h"
 #include "shadergen.h"
 #include "texture_decode.h"
 #include "vertex_loader.h"
 #include "hires.h"
 #include "../input/input.h"
+#ifdef CASTAWAY_DXMT
+#include "../input/gamepad.h"
+#include "../input/bindings.h"
+#include <array>
+#include <cmath>
+#endif
 #include <type_traits>
 #include <thread>
 #include <deque>
@@ -79,7 +113,7 @@ static std::filesystem::path ShaderCacheDir()
         if (!s_shaderCacheDir.empty()) dir = s_shaderCacheDir;
         else
         {
-            dir = Host_ExePath().parent_path() / "shadercache";
+            dir = Host_AppDir() / "shadercache";
         }
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
@@ -183,7 +217,7 @@ static int s_scale = 3;
 
 static std::unordered_map<VSKey, ID3D11VertexShader*, KeyHash<VSKey>> s_vsCache;
 static std::unordered_map<PSKey, ID3D11PixelShader*, KeyHash<PSKey>> s_psCache;
-extern bool g_asyncShaders;
+extern std::atomic<bool> g_asyncShaders;
 static void StartShaderWorkers();
 static void PreloadShaders();
 static std::unordered_map<uint64_t, ID3D11BlendState*> s_blendCache;
@@ -467,10 +501,14 @@ static bool InitDevice()
 
 void Renderer_Init()
 {
+#ifndef __APPLE__
     if (!Video_Init()) FATAL("{}", Video_DeviceHelp());
+#endif
     if (!InitDevice()) FATAL("renderer init failed");
     if (g_config.texturePack) HiRes_Init(g_config.texturePackDir);
     g_asyncShaders = g_config.asyncShaders;
+    void Renderer_ResetSamplers();
+    Renderer_ResetSamplers();
     StartShaderWorkers();
     PreloadShaders();
     s_ready = true;
@@ -593,7 +631,7 @@ static std::condition_variable s_compileCv;
 static std::deque<CompileJob> s_compileJobs;
 static std::vector<CompileDone> s_compileDone;
 static std::atomic<int> s_compilePending{ 0 };
-bool g_asyncShaders = true;
+std::atomic<bool> g_asyncShaders{true};
 
 static void CompileWorker()
 {
@@ -1004,16 +1042,26 @@ static ID3D11RasterizerState* GetRasterState(uint32_t cull)
     return s;
 }
 
-// Settings changed (anisotropy): samplers are recreated on next use. Render thread only.
+// Settings can be edited from the SDL main thread on macOS. Release the
+// cached resources only on the GX thread, before using the new setting.
+static std::atomic<int> s_pendingAnisotropy{0};
+static int s_anisotropy = 1;
+
 void Renderer_ResetSamplers()
 {
-    for (auto& kv : s_samplerCache)
-        if (kv.second) kv.second->Release();
-    s_samplerCache.clear();
+    s_pendingAnisotropy.store(g_config.anisotropy, std::memory_order_relaxed);
 }
 
 static ID3D11SamplerState* GetSampler(uint32_t mode0, uint32_t mode1, bool hasMips)
 {
+    const int requested = s_pendingAnisotropy.exchange(0, std::memory_order_relaxed);
+    if (requested && requested != s_anisotropy)
+    {
+        s_anisotropy = requested;
+        for (auto& kv : s_samplerCache)
+            if (kv.second) kv.second->Release();
+        s_samplerCache.clear();
+    }
     uint64_t key = (uint64_t)mode0 | ((uint64_t)mode1 << 32);
     if (!hasMips) key |= 1ull << 63;
     auto it = s_samplerCache.find(key);
@@ -1031,7 +1079,7 @@ static ID3D11SamplerState* GetSampler(uint32_t mode0, uint32_t mode1, bool hasMi
     int f = (minLinear ? 0x10 : 0) | (magLinear ? 0x4 : 0) | (mipLinear ? 0x1 : 0);
     d.Filter = (D3D11_FILTER)f;
     uint32_t aniso = 1u << ((mode0 >> 19) & 3);
-    aniso = std::max<uint32_t>(aniso, (uint32_t)g_config.anisotropy);   // user override
+    aniso = std::max<uint32_t>(aniso, (uint32_t)s_anisotropy);   // user override
     if (aniso > 1 && minLinear && magLinear)
     {
         d.Filter = D3D11_FILTER_ANISOTROPIC;
@@ -1111,6 +1159,12 @@ static ID3D11ShaderResourceView* GetTexture(int map, uint32_t* outW, uint32_t* o
     const uint8_t* src = PhysPtr(addr);
     bool isCI = fmt == TF_C4 || fmt == TF_C8 || fmt == TF_C14X2;
     uint64_t key0 = (uint64_t)addr | ((uint64_t)fmt << 32) | ((uint64_t)w << 36) | ((uint64_t)h << 47) | ((uint64_t)(levels > 1) << 58) | ((uint64_t)isCI << 59);
+#ifdef CASTAWAY_DXMT
+    const bool psBack = w == 32 && h == 32 && fmt == TF_RGBA8 && levels == 1 &&
+        Gamepad_IsPlayStation() && Host_StrICmp(Binding_Pad(1).c_str(), "b") == 0 &&
+        HiRes_IsWiiBackPrompt(src, GXTex_Size(fmt, w, h));
+    if (psBack) key0 |= 1ull << 60;
+#endif
     if (!isCI && !Capturing())
     {
         auto fast = s_texCache.find(key0);
@@ -1173,6 +1227,43 @@ static ID3D11ShaderResourceView* GetTexture(int map, uint32_t* outW, uint32_t* o
             return e.srv;
         }
     }
+#ifdef CASTAWAY_DXMT
+    if (psBack && !Capturing())
+    {
+        // Draw a PlayStation circle in a neutral button disc. Coverage is
+        // supersampled so the glyph remains clean when the UI scales it down.
+        constexpr int side = 64, samples = 4;
+        std::array<uint32_t, side * side> pixels{};
+        for (int y = 0; y < side; ++y)
+            for (int x = 0; x < side; ++x)
+            {
+                float r = 0, g = 0, b = 0, a = 0;
+                for (int sy = 0; sy < samples; ++sy)
+                    for (int sx = 0; sx < samples; ++sx)
+                    {
+                        const float dx = x + (sx + 0.5f) / samples - side / 2.0f;
+                        const float dy = y + (sy + 0.5f) / samples - side / 2.0f;
+                        const float d = std::sqrt(dx * dx + dy * dy);
+                        if (d >= 29) continue;
+                        float rr = 0.92f, gg = 0.95f, bb = 0.97f;
+                        if (d >= 26) rr = 0.19f, gg = 0.25f, bb = 0.31f;
+                        else if (d >= 11 && d <= 16) rr = 0.78f, gg = 0.12f, bb = 0.20f;
+                        r += rr; g += gg; b += bb; a += 1;
+                    }
+                if (a > 0)
+                {
+                    const auto byte = [](float v) { return uint32_t(std::clamp(v, 0.0f, 255.0f)); };
+                    pixels[y * side + x] = byte(r * 255 / a) | (byte(g * 255 / a) << 8) |
+                        (byte(b * 255 / a) << 16) | (byte(a * 255 / (samples * samples)) << 24);
+                }
+            }
+        const uint32_t* image = pixels.data();
+        CreateTexture(e, side, side, 1, &image, false);
+        e.hash = hash;
+        e.lastFrame = e.hashedFrame = s_frame;
+        return e.srv;
+    }
+#endif
     std::vector<std::vector<uint32_t>> lv(levels);
     std::vector<const uint32_t*> ptrs(levels);
     uint32_t lw = w, lh = h, off = 0;
@@ -1952,6 +2043,47 @@ static void DoEFBCopy()
         ID3D11ShaderResourceView* nulls[2] = { nullptr, nullptr };
         g_ctx->PSSetShaderResources(0, 2, nulls);
         rtv->Release();
+#ifdef CASTAWAY_DXMT
+        // CharacterImageMaker copies a 64x64 RGBA8 render to RAM, then the CPU
+        // downsamples it for the Sim thumbnail. A GPU-only copy leaves it black.
+        if (tw == 64 && th == 64 && fmt == 6 && !depthSrc && !intensity)
+        {
+            g_ctx->OMSetRenderTargets(0, nullptr, nullptr);
+            D3D11_TEXTURE2D_DESC desc{};
+            e.tex->GetDesc(&desc);
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            desc.MiscFlags = 0;
+            ID3D11Texture2D* stage = nullptr;
+            if (SUCCEEDED(g_device->CreateTexture2D(&desc, nullptr, &stage)))
+            {
+                g_ctx->CopyResource(stage, e.tex);
+                D3D11_MAPPED_SUBRESOURCE mapped{};
+                if (SUCCEEDED(g_ctx->Map(stage, 0, D3D11_MAP_READ, 0, &mapped)))
+                {
+                    uint8_t* dest = PhysPtr(destAddr);
+                    for (uint32_t by = 0; by < th; by += 4)
+                        for (uint32_t bx = 0; bx < tw; bx += 4)
+                        {
+                            for (uint32_t y = 0; y < 4; ++y)
+                                for (uint32_t x = 0; x < 4; ++x)
+                                {
+                                    const auto* row = static_cast<const uint8_t*>(mapped.pData) +
+                                        ((by + y) * s_scale + s_scale / 2) * mapped.RowPitch;
+                                    const uint8_t* pixel = row + ((bx + x) * s_scale + s_scale / 2) * 4;
+                                    const uint32_t offset = (y * 4 + x) * 2;
+                                    dest[offset] = pixel[3]; dest[offset + 1] = pixel[0];
+                                    dest[32 + offset] = pixel[1]; dest[32 + offset + 1] = pixel[2];
+                                }
+                            dest += 64;
+                        }
+                    g_ctx->Unmap(stage, 0);
+                }
+                stage->Release();
+            }
+        }
+#endif
         // remember the RAM content so later CPU-side uploads invalidate the copy
         static const uint32_t bppTable[16] = { 4, 8, 8, 16, 16, 16, 32, 8, 8, 8, 8, 16, 16, 16, 16, 16 };
         e.ramSize = std::max<uint32_t>(32, tw * th * bppTable[fmt & 15] / 8);
@@ -2070,3 +2202,5 @@ uint32_t EFB_Read32(uint32_t ea)
 }
 
 void EFB_Write32(uint32_t, uint32_t) {}
+
+#endif

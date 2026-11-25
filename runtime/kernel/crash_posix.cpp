@@ -13,6 +13,7 @@
 #include <execinfo.h>
 #include <thread>
 #include <unistd.h>
+#include <sys/ucontext.h>
 
 extern bool g_noMessageBox;
 extern uint32_t g_framesPresented;
@@ -27,7 +28,11 @@ void OnFatalSignal(int sig, siginfo_t* info, void* uctx)
     static std::atomic<bool> inHandler{ false };
     if (inHandler.exchange(true)) _exit(3);
     uintptr_t pc = 0;
-#if defined(__x86_64__)
+#if defined(__APPLE__) && defined(__aarch64__)
+    pc = (uintptr_t)((ucontext_t*)uctx)->uc_mcontext->__ss.__pc;
+#elif defined(__APPLE__) && defined(__x86_64__)
+    pc = (uintptr_t)((ucontext_t*)uctx)->uc_mcontext->__ss.__rip;
+#elif defined(__x86_64__)
     pc = (uintptr_t)((ucontext_t*)uctx)->uc_mcontext.gregs[REG_RIP];
 #endif
     // not async-signal-safe, but the process is going down anyway
@@ -57,8 +62,10 @@ void Crash_Init()
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     // the handler runs on its own stack, so a guest stack overflow is reported too
-    static uint8_t altStack[256 * 1024];
-    stack_t ss{ altStack, 0, sizeof(altStack) };
+    alignas(16) static uint8_t altStack[256 * 1024];
+    stack_t ss{};
+    ss.ss_sp = altStack;
+    ss.ss_size = sizeof(altStack);
     sigaltstack(&ss, nullptr);
     for (int sig : { SIGSEGV, SIGBUS, SIGILL, SIGFPE }) sigaction(sig, &sa, nullptr);
 }

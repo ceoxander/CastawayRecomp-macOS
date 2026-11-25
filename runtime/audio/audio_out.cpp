@@ -6,12 +6,17 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <vector>
 
 static bool s_ok = false;
 static SDL_AudioStream* s_stream = nullptr;
+#ifdef __APPLE__
+static SDL_AudioDeviceID s_device = 0;
+#endif
 static uint32_t s_rate = 0;
+static uint64_t s_retryAfter = 0;
 static std::vector<int16_t> s_staging;
 static constexpr uint32_t BATCH_FRAMES_PER_SEC_DIV = 100;   // 10 ms batches
 static constexpr uint32_t MAX_QUEUED_BATCHES = 8;            // more than this is dropped (latency)
@@ -26,7 +31,31 @@ bool g_audioMute = false;      // --mute (test runs)
 static SDL_AudioStream* OpenStream(int channels, uint32_t rate)
 {
     SDL_AudioSpec spec{ SDL_AUDIO_S16, channels, (int)rate };
+#ifdef __APPLE__
+    if (!s_device)
+    {
+        const SDL_AudioSpec preferred{ SDL_AUDIO_F32, 2, 48000 };
+        s_device = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &preferred);
+        if (!s_device)
+        {
+            LOG_ERROR("CoreAudio output: {}", SDL_GetError());
+            return nullptr;
+        }
+        SDL_AudioSpec actual{};
+        int samples = 0;
+        if (SDL_GetAudioDeviceFormat(s_device, &actual, &samples))
+            LOG_INFO("macOS audio output: {} Hz, {} channels, {} sample frames",
+                     actual.freq, actual.channels, samples);
+    }
+    SDL_AudioStream* st = SDL_CreateAudioStream(&spec, nullptr);
+    if (st && !SDL_BindAudioStream(s_device, st))
+    {
+        SDL_DestroyAudioStream(st);
+        st = nullptr;
+    }
+#else
     SDL_AudioStream* st = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+#endif
     if (!st)
     {
         LOG_ERROR("SDL audio: cannot open a {} Hz stream: {}", rate, SDL_GetError());
@@ -39,6 +68,10 @@ static SDL_AudioStream* OpenStream(int channels, uint32_t rate)
 
 void AudioOut_Init()
 {
+#ifdef __APPLE__
+    if (!SDL_GetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES))
+        SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "512");
+#endif
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
     {
         LOG_ERROR("SDL audio init failed ({}); audio disabled", SDL_GetError());
@@ -52,14 +85,26 @@ void AudioOut_Init()
 void AudioOut_PushDSP(const uint8_t* data, uint32_t bytes, uint32_t sampleRate)
 {
     if (!s_ok) return;
-    if (!s_stream || s_rate != sampleRate)
+    if (s_rate != sampleRate)
     {
         if (s_stream) SDL_DestroyAudioStream(s_stream);
-        s_stream = OpenStream(2, sampleRate);
+        s_stream = nullptr;
         s_rate = sampleRate;
+        s_retryAfter = 0;
         s_staging.clear();
     }
-    if (!s_stream) return;
+    if (!s_stream)
+    {
+        const uint64_t now = SDL_GetTicks();
+        if (now < s_retryAfter) return;
+        s_stream = OpenStream(2, sampleRate);
+        if (!s_stream)
+        {
+            // A disconnected or unavailable default device may come back later.
+            s_retryAfter = now + 1000;
+            return;
+        }
+    }
     uint32_t frames = bytes / 4;
     g_audioFrames += frames;
     // DMA data is big-endian, right channel first
@@ -68,8 +113,20 @@ void AudioOut_PushDSP(const uint8_t* data, uint32_t bytes, uint32_t sampleRate)
         int16_t r = (int16_t)((data[4 * i] << 8) | data[4 * i + 1]);
         int16_t l = (int16_t)((data[4 * i + 2] << 8) | data[4 * i + 3]);
         g_audioPeak = std::max(g_audioPeak, std::max(std::abs((int)l), std::abs((int)r)));
-        s_staging.push_back((int16_t)(l * g_audioVolume));
-        s_staging.push_back((int16_t)(r * g_audioVolume));
+        float gain = g_audioVolume;
+#ifdef __APPLE__
+        // Soft knee above 90% of full scale. Use a linked stereo gain so a
+        // loud transient keeps its stereo position.
+        const float peak = std::max(std::abs(float(l)), std::abs(float(r))) * gain / 32768.0f;
+        constexpr float knee = 0.9f;
+        if (peak > knee)
+        {
+            const float excess = peak - knee;
+            gain *= (knee + (1.0f - knee) * excess / (excess + 1.0f - knee)) / peak;
+        }
+#endif
+        s_staging.push_back(static_cast<int16_t>(std::clamp(l * gain, -32768.0f, 32767.0f)));
+        s_staging.push_back(static_cast<int16_t>(std::clamp(r * gain, -32768.0f, 32767.0f)));
         if (g_audioDump) { int16_t lr[2] = { l, r }; fwrite(lr, 2, 2, g_audioDump); }
     }
     uint32_t batch = sampleRate / BATCH_FRAMES_PER_SEC_DIV;

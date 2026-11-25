@@ -1,6 +1,9 @@
 // /dev/fs and NAND file access, backed by a host directory.
 #include "../config.h"
 #include "ios.h"
+#ifdef __APPLE__
+#include "save_backup.h"
+#endif
 #include "../kernel/memory.h"
 #include "../log.h"
 #include "../region.h"
@@ -109,8 +112,15 @@ private:
         }
         std::error_code ec;
         fs::rename(tmp, hp, ec);
-        if (ec) LOG_WARN("FS: failed to replace {}: {}", hp.string(), ec.message());
+        if (ec)
+        {
+            LOG_WARN("FS: failed to replace {}: {}", hp.string(), ec.message());
+            return;
+        }
         m_dirty = false;
+#ifdef __APPLE__
+        if (m_name == Region_TitleDataDir() + "/SaveGame") SaveBackup_OnCommit();
+#endif
     }
 
     uint32_t m_mode;

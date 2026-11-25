@@ -14,6 +14,7 @@ void Gamepad_Init();
 void Gamepad_HandleEvent(const SDL_Event& e);
 // Reads the active gamepad (false if none, or the game window is not in front).
 bool Gamepad_Read(PadState& out);
+bool Gamepad_IsPlayStation();
 void Gamepad_Rumble(bool on);
 // The bindings changed (config.ini [Gamepad]); applied on the next read.
 void Gamepad_ReloadBindings();
