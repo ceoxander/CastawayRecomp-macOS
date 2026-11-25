@@ -1,118 +1,58 @@
-# CastawayRecomp
+# The Sims 2: Castaway para macOS
 
-A static recompilation of **The Sims 2: Castaway** (Wii) to native Windows x64 and Linux x64. The game's
-PowerPC code is translated to C++ ahead of time and runs on a runtime that stands in for the
-Wii hardware and system software. It plays with a gamepad of any brand, or with mouse and
-keyboard.
+![Menú de CastawayRecomp](https://raw.githubusercontent.com/ceoxander/CastawayRecomp-macOS/macos-port/runtime/ui/assets/tropical-menu.png)
 
-Supported disc: USA (`R42E69`).
+**Port nativo para Mac Apple Silicon.** Necesitas proporcionar tu propia copia del juego para Wii.
 
-**You must own the game.** Nothing from the game is in this repository; the build reads your
-own disc image.
+[⬇ Descargar para macOS](https://github.com/ceoxander/CastawayRecomp-macOS/releases/latest) · [Ver código fuente](https://github.com/ceoxander/CastawayRecomp-macOS/tree/macos-port)
 
-## How it works
+## Instalación simple
 
-```
-main.dol + tsc_wii_release_dvd.elf ──► tools/analyze.py ──► tools/recomp.py ──► generated/r42e69/*.cpp ─┐
- (PowerPC)  (the game's linker ELF)     function analysis    PPC -> C++ codegen    (28k functions)         ├─► CastawayRecomp.exe
-                                                                                    runtime/ ──────────────┘
-```
+1. Descarga **CastawayRecomp-Apple-Silicon.dmg** desde [Versiones](https://github.com/ceoxander/CastawayRecomp-macOS/releases/latest).
+2. Abre el DMG y ejecuta **Instalar Castaway.command**.
+3. Selecciona tu imagen propia del juego: **.iso**, **.rvz** o **.wbfs**.
+4. Espera mientras prepara las dependencias y compila el port. La primera compilación puede tardar unos minutos.
+5. Abre **The Sims 2 Castaway.app** desde Aplicaciones.
 
-* **Symbols from the disc**: the disc ships `files/tsc_wii_release_dvd.elf`, the linker output
-  `main.dol` was made from. Its sections are byte-identical to the DOL, and it keeps the full
-  symbol table (27,584 functions), so every function has its real name and start, and the
-  runtime refers to game code by symbol (`tools/game_addrs.txt`).
-* **Recompiler** (`tools/`): decodes every Gekko/Broadway instruction (including paired singles
-  and quantized loads/stores) and emits one C++ function per guest function.
-* **Runtime** (`runtime/`): the game's own Revolution OS runs recompiled; threads are host
-  fibers. Memory-mapped hardware (VI, PI, CP/PE, DSP/AI, EXI, SI, IPC) and IOS (`/dev/di`
-  served from the installed disc files, `/dev/fs` with saves in `nand/`) are emulated at a high
-  level. GX is rendered with Direct3D 11 on its own thread (through DXVK on Linux), audio
-  goes through an AX HLE to SDL3.
-* **Input** (`runtime/input`): see below.
+> El juego no está incluido. La imagen se procesa localmente; usa una copia que tengas legalmente.
 
-The recompiler and most of the runtime come from
-[BlackKnightRecomp](https://github.com/yunophilia/BlackKnightRecomp); the input layer is new.
+### Requisitos
 
-## Fixes
+- Mac con Apple Silicon (M1 o posterior) y macOS compatible.
+- Imagen USA **R42E69** de The Sims 2: Castaway para Wii.
+- Espacio libre para dependencias y archivos compilados.
+- Internet durante la preparación inicial.
 
-* **Music from the front** (`[Audio] music_front`, on by default): the Wii version hands its
-  music to the mixer with GameCube-era arguments, which puts it in the rear surround channel.
-  On stereo it plays in antiphase (hollow, and near silent in mono). The fix plays it from
-  the front, like the sound effects. Details in docs/progress.md.
+## Controles
 
-## Controls
-
-The game reads a GameCube controller on port 4 as well as Wii Remotes (a leftover of its
-development). That port is completed and drives the game: gamepads and the keyboard play on
-it with the Wii Remote and Nunchuk's buttons, and the mouse is the pointer. A virtual Wii
-Remote with a Nunchuk is always connected, so the game never asks for one.
-
-| Game (Wii) | Gamepad | Keyboard / mouse |
+| Acción | Teclado y ratón | Mando |
 |---|---|---|
-| Pointer | right stick | mouse, or I J K L |
-| A | A (south) | Space, left mouse button |
-| B | B (east) | Backspace, right mouse button |
-| Nunchuk stick | left stick | W A S D |
-| Nunchuk C / Z | RB / LB | C / Z, middle mouse button = C |
-| 1 / 2 | X (west) / Y (north) | 1 / 2 |
-| + / - | Start / Back | Enter / Tab |
-| HOME | Guide, or Back + Start | H |
-| D-pad | D-pad | arrow keys |
-| GameCube L / R | LT / RT | Q / E |
+| Mover al Sim | W, A, S, D | Stick izquierdo |
+| Apuntar | Ratón o I, J, K, L | Stick derecho |
+| Aceptar | Espacio o clic izquierdo | A / botón inferior |
+| Cancelar | Retroceso o clic derecho | B / botón derecho |
+| Menú | Enter | Start |
+| Cruceta | Flechas | Cruceta |
+| Gatillos L / R | Q / E | LT / RT |
 
-The Wii version has no C-stick, so the right stick (and IJKL) moves a virtual pointer; the
-mouse takes over as soon as it moves. After 8 seconds without use the pointer leaves the
-screen, like pointing the Wii Remote away: then the D-pad and A work the highlighted buttons,
-and the D-pad also picks between actions where the game asks to tilt the Nunchuk. Gamepads are read through SDL3 (Xbox, PlayStation, Switch Pro and generic pads). Rumble goes
-to the gamepad.
+Compatible con mandos Xbox, PlayStation, Switch Pro y otros reconocidos por SDL3.
 
-## Building
+## Acerca del port
 
-Requirements: Windows 10+, Visual Studio 2022 or newer (the Build Tools are enough) with the
-C++ workload and the "C++ Clang Compiler for Windows" component, CMake 3.21+ and Ninja,
-Python 3.10+. The first configure downloads [nod](https://github.com/encounter/nod) (disc
-images), [Dear ImGui](https://github.com/ocornut/imgui) and [SDL3](https://github.com/libsdl-org/SDL).
+El proyecto recompila el código PowerPC del juego a C++ y emula los servicios de Wii necesarios. El disco compatible es USA (R42E69). No se distribuyen archivos del juego.
 
-`tools/dev_build.bat` sets up the Visual Studio environment and builds with the
-`windows-clang` preset (clang-cl, lld-link, Ninja).
+La versión de macOS está dirigida a Apple Silicon. Consulta [PROGRESS_MACOS.md](PROGRESS_MACOS.md) para el estado del port y [Versiones](https://github.com/ceoxander/CastawayRecomp-macOS/releases) para las descargas.
 
-1. Configure and build the installer (before the game code is generated only the installer is
-   built): `tools\dev_build.bat`
-2. Install the game data from your disc image: `out\bkr_install <image.iso|.rvz|.wbfs> game\R42E69`
-3. Generate the recompiled sources: `python tools/build_generated.py`
-4. Build everything: `tools\dev_build.bat`; the game is `out\CastawayRecomp.exe`.
+## Compilar desde el código
 
-On Linux, see [docs/linux.md](docs/linux.md): DXVK-native and vkd3d provide Direct3D 11 and
-the shader compiler, and the build is `cmake --preset linux-clang && ninja -C build/linux-clang`.
+Necesitas Xcode Command Line Tools, CMake, Ninja y Python 3.10 o posterior. Desde la raíz del repositorio, ejecuta:
 
-## Testing
-
-The end-to-end test is a TAS script ([docs/tas.md](docs/tas.md)): from the first boot it
-starts a new game, creates a Sim, plays through the story, sleeps, walks, saves and quits,
-and loads the save again. It waits for the game's own state changes and checks values in
-game memory (where the Sim is, the clock, sleeping) at each step. It runs on Windows and
-headless on Linux, and passes only if every check does:
-
-```
-powershell -ExecutionPolicy Bypass -File tools/tas_run.ps1 -Script tools/tas/e2e.tas
-sh tools/tas_run_linux.sh tools/tas/e2e.tas
+```bash
+./tools/package_macos.sh
 ```
 
-`tools/run_test.ps1` runs the game minimized for a fixed time. Input scripts (`--script`)
-drive it frame by frame and take screenshots; `tools/scripts/gen.py` builds them, for example
-`boot_to_menu`, `cas_accept` (new game, create a Sim), `beach_move` (walk on the island) and
-`soak` (ten minutes of seeded random input). Script frames are video fields (game time),
-so runs behave the same on fast and slow machines. With the call-counting build
-(`tools\dev_build.bat counts`), the script commands `countsreset` and `counts <file>` dump
-per-function call counts; `tools/count_diff.py` lists what one action called that another
-did not. `tools/contact.py` tiles screenshots into one image.
+## Créditos y licencia
 
-```
-python tools/scripts/gen.py beach_move
-powershell -File tools/run_test.ps1 -Seconds 200 -GameArgs "--nobox --skip-launcher --mute --data ..\game\R42E69 --script ..\tools\scripts\beach_move.txt"
-```
+Basado en [BlackKnightRecomp](https://github.com/yunophilia/BlackKnightRecomp). Consulta [LICENSE](LICENSE) y los avisos de cada dependencia. The Sims 2 y sus marcas pertenecen a sus titulares. Este proyecto no está afiliado con EA ni Nintendo.
 
-## License
-
-GPL-2.0-only (see `LICENSE`); the runtime contains code derived from Dolphin.
+**Cada jugador debe aportar su propia copia del juego.**
