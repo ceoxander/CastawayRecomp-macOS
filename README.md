@@ -56,3 +56,6 @@ Necesitas Xcode Command Line Tools, CMake, Ninja y Python 3.10 o posterior. Desd
 Basado en [BlackKnightRecomp](https://github.com/yunophilia/BlackKnightRecomp). Consulta [LICENSE](LICENSE) y los avisos de cada dependencia. The Sims 2 y sus marcas pertenecen a sus titulares. Este proyecto no está afiliado con EA ni Nintendo.
 
 **Cada jugador debe aportar su propia copia del juego.**
+
+
+![Icono de CastawayRecomp](https://raw.githubusercontent.com/ceoxander/CastawayRecomp-macOS/macos-port/runtime/ui/assets/castaway-app-icon.png)
